@@ -1,0 +1,35 @@
+# ---------- LaTeX build artifacts ----------
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+*.nav
+*.snm
+*.vrb
+*.idx
+*.ilg
+*.ind
+*.dvi
+
+# ---------- Editor / OS files ----------
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ---------- Scratch / temp ----------
+tmp/
+scratch/
+*.tmp
