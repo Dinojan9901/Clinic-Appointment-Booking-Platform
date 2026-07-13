@@ -1,0 +1,129 @@
+# ============================================================
+# MediConnect - Clinic Appointment Booking Platform (CA03 Prototype)
+# Microservices orchestration (deployment demonstration)
+#
+# Public entry points:
+#   - Frontend (Web App):        http://localhost:3000
+#   - API Gateway:               http://localhost:8080
+#   - RabbitMQ management UI:     http://localhost:15672  (guest / guest)
+#
+# Only the API Gateway and Frontend are exposed to the host; the individual
+# microservices are reachable only inside the Docker network (through the
+# gateway), which mirrors the CA01 architecture.
+# ============================================================
+services:
+
+  # ---------- Infrastructure ----------
+  mongodb:
+    image: mongo:7
+    container_name: mc-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: mc-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # ---------- Microservices (each owns its own database) ----------
+  auth-service:
+    build: ./services/auth-service
+    container_name: mc-auth
+    environment:
+      PORT: 4001
+      MONGO_URL: mongodb://mongodb:27017/auth_db
+      JWT_SECRET: mediconnect_dev_secret
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  appointment-service:
+    build: ./services/appointment-service
+    container_name: mc-appointment
+    environment:
+      PORT: 4002
+      MONGO_URL: mongodb://mongodb:27017/appointment_db
+      RABBIT_URL: amqp://rabbitmq:5672
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  records-service:
+    build: ./services/records-service
+    container_name: mc-records
+    environment:
+      PORT: 4003
+      MONGO_URL: mongodb://mongodb:27017/records_db
+      RABBIT_URL: amqp://rabbitmq:5672
+      APPOINTMENT_URL: http://appointment-service:4002
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notification-service:
+    build: ./services/notification-service
+    container_name: mc-notification
+    environment:
+      PORT: 4004
+      MONGO_URL: mongodb://mongodb:27017/notification_db
+      RABBIT_URL: amqp://rabbitmq:5672
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------- API Gateway (single public entry point) ----------
+  api-gateway:
+    build: ./api-gateway
+    container_name: mc-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      JWT_SECRET: mediconnect_dev_secret
+      AUTH_URL: http://auth-service:4001
+      APPOINTMENT_URL: http://appointment-service:4002
+      RECORDS_URL: http://records-service:4003
+      NOTIFICATION_URL: http://notification-service:4004
+    depends_on:
+      - auth-service
+      - appointment-service
+      - records-service
+      - notification-service
+    restart: unless-stopped
+
+  # ---------- Frontend (React SPA served by nginx) ----------
+  frontend:
+    build: ./frontend
+    container_name: mc-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
