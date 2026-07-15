@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MediConnect - Clinic Appointment Booking</title>
+  <!-- React SPA (loaded via CDN; requires internet at page load) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root { --navy:#14345f; --steel:#3465a4; --bg:#f4f6fa; --line:#dfe4ec; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2733; }
+    header { background:var(--navy); color:#fff; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+    header h1 { font-size:20px; margin:0; }
+    header .who { font-size:14px; }
+    header button { margin-left:12px; }
+    .container { max-width:960px; margin:20px auto; padding:0 16px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:18px; margin-bottom:16px; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+    .nav button { background:#fff; border:1px solid var(--line); }
+    .nav button.active { background:var(--steel); color:#fff; border-color:var(--steel); }
+    button { cursor:pointer; border:none; background:var(--steel); color:#fff; padding:8px 14px; border-radius:6px; font-size:14px; }
+    button.secondary { background:#eef1f6; color:var(--navy); }
+    button.danger { background:#c0392b; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    input, select, textarea { width:100%; padding:8px 10px; margin:6px 0 12px; border:1px solid var(--line); border-radius:6px; font-size:14px; font-family:inherit; }
+    label { font-size:13px; font-weight:600; color:#41506a; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    .row > div { flex:1; min-width:160px; }
+    .doctor { border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:10px; }
+    .doctor h3 { margin:0 0 4px; color:var(--navy); }
+    .muted { color:#6b7688; font-size:13px; }
+    .slot { display:inline-block; margin:4px 6px 4px 0; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:12px; font-weight:600; }
+    .badge.booked { background:#e2f0d9; color:#2e7d32; }
+    .badge.cancelled { background:#fdecea; color:#c0392b; }
+    .badge.pending { background:#fff4e0; color:#b26a00; }
+    .badge.completed { background:#e2f0d9; color:#2e7d32; }
+    .badge.paid { background:#e2f0d9; color:#2e7d32; }
+    .msg { padding:10px 12px; border-radius:6px; margin-bottom:12px; font-size:14px; }
+    .msg.err { background:#fdecea; color:#c0392b; }
+    .msg.ok { background:#e2f0d9; color:#2e7d32; }
+    h2 { color:var(--navy); }
+    .title { text-align:center; margin-top:40px; }
+    .title h1 { color:var(--navy); }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // ---------- API helper (all calls go through the gateway at /api) ----------
+    async function api(path, { method = 'GET', body, token } = {}) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      const res = await fetch('/api' + path, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
+      return data;
+    }
+
+    // ---------- Auth screen ----------
+    function AuthView({ onLogin }) {
+      const [mode, setMode] = useState('login');
+      const [form, setForm] = useState({ name: '', email: '', password: '', role: 'patient' });
+      const [err, setErr] = useState('');
+      const [busy, setBusy] = useState(false);
+      const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+      async function submit(e) {
+        e.preventDefault();
+        setErr(''); setBusy(true);
+        try {
+          if (mode === 'register') {
+            await api('/auth/register', { method: 'POST', body: form });
+          }
+          const data = await api('/auth/login', {
+            method: 'POST',
+            body: { email: form.email, password: form.password },
+          });
+          onLogin(data.token, data.user);
+        } catch (e) { setErr(e.message); }
+        finally { setBusy(false); }
+      }
+
+      return (
+        <div className="container" style={{ maxWidth: 420 }}>
+          <div className="title">
+            <h1>MediConnect</h1>
+            <p className="muted">Clinic Appointment Booking Platform</p>
+          </div>
+          <div className="card">
+            <div className="nav">
+              <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>Login</button>
+              <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>Register</button>
+            </div>
+            {err && <div className="msg err">{err}</div>}
+            <form onSubmit={submit}>
+              {mode === 'register' && (
+                <div>
+                  <label>Full name</label>
+                  <input value={form.name} onChange={set('name')} required />
+                  <label>Register as</label>
+                  <select value={form.role} onChange={set('role')}>
+                    <option value="patient">Patient</option>
+                    <option value="doctor">Doctor</option>
+                  </select>
+                </div>
+              )}
+              <label>Email</label>
+              <input type="email" value={form.email} onChange={set('email')} required />
+              <label>Password</label>
+              <input type="password" value={form.password} onChange={set('password')} required />
+              <button type="submit" disabled={busy}>{busy ? 'Please wait...' : (mode === 'login' ? 'Login' : 'Create account')}</button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // ---------- Patient: find a doctor & book ----------
+    function FindDoctor({ token }) {
+      const [filters, setFilters] = useState({ speciality: '', location: '' });
+      const [doctors, setDoctors] = useState([]);
+      const [msg, setMsg] = useState(null);
+
+      async function search() {
+        setMsg(null);
+        try {
+          const q = new URLSearchParams();
+          if (filters.speciality) q.set('speciality', filters.speciality);
+          if (filters.location) q.set('location', filters.location);
+          const data = await api('/doctors?' + q.toString(), { token });
+          setDoctors(data);
+          if (!data.length) setMsg({ type: 'err', text: 'No doctors found for those filters.' });
+        } catch (e) { setMsg({ type: 'err', text: e.message }); }
+      }
+
+      useEffect(() => { search(); }, []);
+
+      async function book(doctorId, slot) {
+        setMsg(null);
+        try {
+          await api('/appointments', { method: 'POST', token, body: { doctorId, slot } });
+          setMsg({ type: 'ok', text: 'Appointment booked and payment completed. Check "My Appointments".' });
+          search();
+        } catch (e) { setMsg({ type: 'err', text: e.message }); }
+      }
+
+      return (
+        <div className="card">
+          <h2>Find a Doctor</h2>
+          {msg && <div className={'msg ' + (msg.type === 'ok' ? 'ok' : 'err')}>{msg.text}</div>}
+          <div className="row">
+            <div>
+              <label>Speciality</label>
+              <input placeholder="e.g. Cardiology" value={filters.speciality}
+                     onChange={(e) => setFilters({ ...filters, speciality: e.target.value })} />
+            </div>
+            <div>
+              <label>Location</label>
+              <input placeholder="e.g. Kandy" value={filters.location}
+                     onChange={(e) => setFilters({ ...filters, location: e.target.value })} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <button onClick={search}>Search</button>
+            </div>
+          </div>
+          {doctors.map((d) => (
+            <div className="doctor" key={d._id}>
+              <h3>{d.name} <span className="muted">- {d.speciality}</span></h3>
+              <div className="muted">{d.clinicName}, {d.clinicAddress} ({d.location})</div>
+              <div className="muted">Fee: Rs. {d.fee} &nbsp;|&nbsp; Rating: {d.rating}</div>
+              <div style={{ marginTop: 8 }}>
+                {d.availableSlots.length === 0 && <span className="muted">No slots available</span>}
+                {d.availableSlots.map((s) => (
+                  <button className="slot secondary" key={s} onClick={() => book(d._id, s)}>Book {s}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ---------- Patient: my appointments ----------
+    function MyAppointments({ token }) {
+      const [items, setItems] = useState([]);
+      const [msg, setMsg] = useState(null);
+      async function load() {
+        try { setItems(await api('/appointments/mine', { token })); }
+        catch (e) { setMsg({ type: 'err', text: e.message }); }
+      }
+      useEffect(() => { load(); }, []);
+      async function cancel(id) {
+        setMsg(null);
+        try { await api('/appointments/' + id + '/cancel', { method: 'POST', token }); load(); }
+        catch (e) { setMsg({ type: 'err', text: e.message }); }
+      }
+      return (
+        <div className="card">
+          <h2>My Appointments</h2>
+          {msg && <div className="msg err">{msg.text}</div>}
+          {items.length === 0 && <p className="muted">No appointments yet.</p>}
+          {items.map((a) => (
+            <div className="doctor" key={a._id}>
+              <h3>{a.doctorName} <span className="muted">- {a.speciality}</span></h3>
+              <div className="muted">{a.clinicName}, {a.clinicAddress}</div>
+              <div className="muted">Slot: {a.slot} &nbsp;|&nbsp; Fee: Rs. {a.fee}</div>
+              <div style={{ marginTop: 6 }}>
+                <span className={'badge ' + a.status}>{a.status}</span>{' '}
+                <span className={'badge ' + a.paymentStatus}>{a.paymentStatus}</span>
+                {a.status === 'booked' &&
+                  <button className="danger" style={{ float: 'right' }} onClick={() => cancel(a._id)}>Cancel</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ---------- Patient: my records / prescriptions ----------
+    function MyRecords({ token }) {
+      const [items, setItems] = useState([]);
+      useEffect(() => { api('/records/mine', { token }).then(setItems).catch(() => {}); }, []);
+      return (
+        <div className="card">
+          <h2>My Consultation Records</h2>
+          {items.length === 0 && <p className="muted">No records yet. A record is created when you book, and completed by the doctor after your visit.</p>}
+          {items.map((r) => (
+            <div className="doctor" key={r._id}>
+              <h3>{r.doctorName} <span className={'badge ' + r.status}>{r.status}</span></h3>
+              <div className="muted">Visit: {r.visitDate} at {r.clinicName}</div>
+              <div style={{ marginTop: 6 }}><strong>Notes:</strong> {r.notes || <span className="muted">pending</span>}</div>
+              <div style={{ marginTop: 6 }}><strong>Prescription:</strong>
+                {r.prescription && r.prescription.length ? (
+                  <ul>{r.prescription.map((p, i) => <li key={i}>{p.medication} {p.dosage && '- ' + p.dosage}</li>)}</ul>
+                ) : <span className="muted"> none</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ---------- Patient: notifications ----------
+    function Notifications({ token }) {
+      const [items, setItems] = useState([]);
+      useEffect(() => { api('/notifications/mine', { token }).then(setItems).catch(() => {}); }, []);
+      return (
+        <div className="card">
+          <h2>Notifications</h2>
+          {items.length === 0 && <p className="muted">No notifications yet.</p>}
+          <table>
+            <tbody>
+              {items.map((n) => (
+                <tr key={n._id}>
+                  <td>{n.message}<div className="muted">via {n.channel} - {new Date(n.createdAt).toLocaleString()}</div></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ---------- Doctor: consultation records to complete ----------
+    function DoctorRecords({ token }) {
+      const [items, setItems] = useState([]);
+      const [edit, setEdit] = useState({});
+      const [msg, setMsg] = useState(null);
+      async function load() { try { setItems(await api('/records/doctor', { token })); } catch (e) { setMsg({ type:'err', text:e.message }); } }
+      useEffect(() => { load(); }, []);
+
+      function setField(id, field, value) {
+        setEdit({ ...edit, [id]: { ...(edit[id] || {}), [field]: value } });
+      }
+      async function save(r) {
+        setMsg(null);
+        const e = edit[r._id] || {};
+        const prescription = (e.med ? [{ medication: e.med, dosage: e.dose || '' }] : r.prescription) || [];
+        try {
+          await api('/records/' + r._id, { method: 'PUT', token, body: { notes: e.notes ?? r.notes, prescription } });
+          setMsg({ type: 'ok', text: 'Record completed and saved.' });
+          load();
+        } catch (err) { setMsg({ type: 'err', text: err.message }); }
+      }
+      return (
+        <div className="card">
+          <h2>Consultation Records</h2>
+          <p className="muted">Records are auto-created (via events) when patients book. Add notes and a prescription after the in-clinic visit.</p>
+          {msg && <div className={'msg ' + (msg.type === 'ok' ? 'ok' : 'err')}>{msg.text}</div>}
+          {items.length === 0 && <p className="muted">No records yet.</p>}
+          {items.map((r) => (
+            <div className="doctor" key={r._id}>
+              <h3>{r.patientName} <span className={'badge ' + r.status}>{r.status}</span></h3>
+              <div className="muted">Visit: {r.visitDate} at {r.clinicName}</div>
+              {r.status === 'completed' ? (
+                <div style={{ marginTop: 6 }}>
+                  <div><strong>Notes:</strong> {r.notes}</div>
+                  <div><strong>Prescription:</strong> {r.prescription.map((p, i) => <span key={i}>{p.medication} {p.dosage}; </span>)}</div>
+                </div>
+              ) : (
+                <div style={{ marginTop: 8 }}>
+                  <label>Consultation notes</label>
+                  <textarea rows="2" onChange={(e) => setField(r._id, 'notes', e.target.value)} />
+                  <div className="row">
+                    <div><label>Medication</label><input onChange={(e) => setField(r._id, 'med', e.target.value)} /></div>
+                    <div><label>Dosage</label><input placeholder="e.g. 1 tab twice daily" onChange={(e) => setField(r._id, 'dose', e.target.value)} /></div>
+                  </div>
+                  <button onClick={() => save(r)}>Complete record</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ---------- Doctor: appointments ----------
+    function DoctorAppointments({ token }) {
+      const [items, setItems] = useState([]);
+      useEffect(() => { api('/appointments/doctor', { token }).then(setItems).catch(() => {}); }, []);
+      return (
+        <div className="card">
+          <h2>Clinic Appointments</h2>
+          {items.length === 0 && <p className="muted">No appointments yet.</p>}
+          <table>
+            <thead><tr><th>Patient</th><th>Doctor</th><th>Slot</th><th>Clinic</th><th>Status</th></tr></thead>
+            <tbody>
+              {items.map((a) => (
+                <tr key={a._id}>
+                  <td>{a.patientName}</td><td>{a.doctorName}</td><td>{a.slot}</td>
+                  <td>{a.clinicName}</td><td><span className={'badge ' + a.status}>{a.status}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ---------- Main app shell ----------
+    function App() {
+      const [token, setToken] = useState(localStorage.getItem('mc_token') || '');
+      const [user, setUser] = useState(JSON.parse(localStorage.getItem('mc_user') || 'null'));
+      const [tab, setTab] = useState('find');
+
+      function onLogin(t, u) {
+        localStorage.setItem('mc_token', t);
+        localStorage.setItem('mc_user', JSON.stringify(u));
+        setToken(t); setUser(u);
+        setTab(u.role === 'doctor' ? 'appts' : 'find');
+      }
+      function logout() {
+        localStorage.removeItem('mc_token'); localStorage.removeItem('mc_user');
+        setToken(''); setUser(null);
+      }
+
+      if (!token || !user) return <AuthView onLogin={onLogin} />;
+
+      const patientTabs = [
+        ['find', 'Find a Doctor'], ['appts', 'My Appointments'],
+        ['records', 'My Records'], ['notif', 'Notifications'],
+      ];
+      const doctorTabs = [['appts', 'Appointments'], ['records', 'Consultation Records']];
+      const tabs = user.role === 'doctor' ? doctorTabs : patientTabs;
+
+      return (
+        <div>
+          <header>
+            <h1>MediConnect</h1>
+            <div className="who">
+              {user.name} <span className="muted" style={{ color: '#cdd8ea' }}>({user.role})</span>
+              <button className="secondary" onClick={logout}>Logout</button>
+            </div>
+          </header>
+          <div className="container">
+            <div className="nav">
+              {tabs.map(([k, label]) => (
+                <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{label}</button>
+              ))}
+            </div>
+
+            {user.role === 'patient' && tab === 'find' && <FindDoctor token={token} />}
+            {user.role === 'patient' && tab === 'appts' && <MyAppointments token={token} />}
+            {user.role === 'patient' && tab === 'records' && <MyRecords token={token} />}
+            {user.role === 'patient' && tab === 'notif' && <Notifications token={token} />}
+
+            {user.role === 'doctor' && tab === 'appts' && <DoctorAppointments token={token} />}
+            {user.role === 'doctor' && tab === 'records' && <DoctorRecords token={token} />}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
