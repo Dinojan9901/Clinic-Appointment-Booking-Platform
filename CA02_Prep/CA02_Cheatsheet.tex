@@ -1,0 +1,131 @@
+% EC8208 CA02 Viva - One-page revision cheat-sheet (MediConnect)
+% Compile with: pdflatex
+\documentclass[10pt,a4paper]{article}
+\usepackage{newtxtext,newtxmath}
+\usepackage[T1]{fontenc}
+\usepackage[a4paper,margin=0.55in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{multicol}
+
+\definecolor{navy}{RGB}{20,52,95}
+\definecolor{steel}{RGB}{52,101,164}
+\definecolor{grayln}{RGB}{120,120,120}
+
+\titleformat{\section}{\bfseries\small\color{navy}}{}{0pt}{}
+\titlespacing{\section}{0pt}{4pt}{2pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{2pt}
+\pagestyle{empty}
+\renewcommand{\arraystretch}{1.12}
+\setlist[itemize]{leftmargin=1.2em,itemsep=0pt,topsep=1pt,parsep=0pt}
+
+\newcommand{\hd}[1]{\textbf{\color{navy}#1}}
+
+\begin{document}
+
+{\centering
+{\large\bfseries\color{navy} EC8208 -- CA02 Viva Cheat-Sheet}\\
+{\footnotesize\color{grayln} MediConnect -- Microservices Clinic Appointment Booking Platform}\par}
+\vspace{2pt}
+\hrule
+\vspace{3pt}
+
+\begin{multicols}{2}
+
+\section{30-Second System Pitch}
+{\footnotesize MediConnect is a \textbf{microservices web platform} where patients \textbf{book
+clinic appointments in advance} and attend in person. A \textbf{React} app calls an
+\textbf{API Gateway} that routes to independent services (Auth, Appointment, Records,
+Notification), each with \textbf{its own database}, communicating \textbf{synchronously via REST}
+and \textbf{asynchronously via RabbitMQ}, deployed as \textbf{containers on Kubernetes}.}
+
+\section{Answer Framework (use every time)}
+{\footnotesize \hd{Driver} (requirement/quality attribute) $\rightarrow$ \hd{Decision}
+$\rightarrow$ \hd{Alternative} rejected $\rightarrow$ \hd{Trade-off} accepted.\\
+\textit{``Everything in software architecture is a trade-off.''} Always name the downside.}
+
+\section{Key Numbers}
+{\footnotesize 99.9\% uptime \textbullet{} $<$500\,ms (95\% of requests) \textbullet{}
+10{,}000 concurrent users \textbullet{} TLS 1.2+ \textbullet{} JWT expiry 2h.}
+
+\section{Golden Answers (memorise)}
+{\footnotesize
+\begin{itemize}
+  \item \hd{Notification service down?} Booking still succeeds; the \texttt{appointment.booked}
+        event stays durably in RabbitMQ and is processed on recovery. No booking lost.
+  \item \hd{Single point of failure?} Gateway + broker; mitigated by \textbf{replicating the
+        gateway} and \textbf{clustering RabbitMQ}.
+  \item \hd{Healthcare needs ACID -- why NoSQL?} Polyglot: \textbf{PostgreSQL} for
+        booking/payment (ACID), \textbf{MongoDB} for flexible records/EHR.
+  \item \hd{Scale to 10k users?} Stateless services + Kubernetes HPA + load-balanced gateway
+        + Redis cache + DB indexes.
+\end{itemize}}
+
+\columnbreak
+
+\section{Quality Attributes $\rightarrow$ Tactic}
+{\footnotesize
+\begin{tabular}{@{}>{\bfseries}p{2.2cm} p{6.0cm}@{}}
+Scalability & Stateless services, K8s HPA, Redis, indexing\\
+Performance & Gateway TLS offload, Redis cache, indexed queries\\
+Security & TLS, encryption at rest, JWT/RBAC, audit logs\\
+Availability & Replicas, self-healing, broker decoupling\\
+Maintainability & Service boundaries, layered code, CI/CD\\
+Reliability & Transactional DB, Saga, idempotency, health checks\\
+\end{tabular}}
+
+\section{Golden Rules for the Viva}
+{\footnotesize
+\begin{itemize}
+  \item End \emph{every} answer with a \textbf{trade-off} -- benefits alone is advertising, not
+        justification.
+  \item Tie each choice to a \textbf{requirement / quality attribute}.
+  \item Be \textbf{honest} about prototype simplifications (all-Node, MongoDB only, Docker
+        Compose instead of K8s). Bluffing gets punished on the follow-up.
+  \item Know your \textbf{diagrams} cold: context, component, deployment, class, DFD.
+\end{itemize}}
+
+\end{multicols}
+
+\vspace{1pt}
+\section{Decisions: Choice $\rightarrow$ Why $\rightarrow$ Alternative Rejected $\rightarrow$ Trade-off}
+\vspace{1pt}
+{\scriptsize
+\begin{tabular}{@{}>{\bfseries}p{2.15cm} p{4.35cm} p{4.55cm} p{4.7cm}@{}}
+\toprule
+\textbf{Decision} & \textbf{Why (driver)} & \textbf{Alternative rejected} & \textbf{Trade-off accepted}\\
+\midrule
+Microservices & Independent scaling, fault isolation, maintainability, growth to many clinics
+& Monolith/layered: scales as one block, one failure kills all; client-server: no fault
+isolation & Operational complexity, distributed data, eventual consistency\\
+API Gateway & Single entry: central auth, TLS, routing, rate limiting; hides services
+& Clients call services directly: exposed services, duplicated auth, CORS & Gateway is a SPOF
+$\rightarrow$ run replicas behind a load balancer\\
+DB-per-service (PostgreSQL + MongoDB) & Loose coupling; each service owns/evolves its data;
+polyglot fit & Shared database: hidden coupling, schema changes break others & Cross-service
+queries harder; needs Saga for consistency\\
+RabbitMQ (events) & Decouple notification/records from booking path; resilience & Synchronous
+calls: booking blocks, a down service cascades failure; Kafka: overkill for this scale &
+Eventual consistency; a broker to run/monitor\\
+React (SPA) & Responsive, reusable components, large ecosystem, fast dev & Angular (heavier);
+plain JS (hard to scale UI) & Build step, weak SEO (irrelevant behind login)\\
+Node.js / Express & Non-blocking I/O for I/O-bound APIs; same language as frontend; ecosystem
+& Heavier frameworks; Spring Boot kept where strong typing/transactions matter & Poor for
+CPU-heavy work (none here)\\
+JWT + OAuth 2.0 & Stateless auth: any replica verifies without a session store; RBAC & Server
+sessions: need sticky sessions / shared store & Token revocation harder $\rightarrow$ short
+expiry\\
+Redis (cache) & Cache hot reads (doctors, slots) to meet $<$500\,ms, cut DB load & No cache:
+repeated DB hits, slower & Cache invalidation complexity, extra infra\\
+Docker + Kubernetes & Consistent envs, HPA auto-scaling, self-healing, rolling deploys &
+VMs (heavier); manual deploys (inconsistent) & Kubernetes operational complexity\\
+Saga pattern & Consistency across service DBs via compensating actions & Two-phase commit:
+blocking, tight coupling, low availability & Must design compensations; eventual consistency\\
+\bottomrule
+\end{tabular}}
+
+\end{document}
