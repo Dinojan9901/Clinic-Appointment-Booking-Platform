@@ -144,7 +144,17 @@
           const data = await api('/doctors?' + q.toString(), { token });
           setDoctors(data);
           if (!data.length) setMsg({ type: 'err', text: 'No doctors found for those filters.' });
-        } catch (e) { setMsg({ type: 'err', text: e.message }); }
+        } catch (e) {  if (e.message.includes("Unexpected token")) {
+    setMsg({
+      type: "err",
+      text: "Doctor service is currently unavailable. Please try again later.",
+    });
+  } else {
+    setMsg({
+      type: "err",
+      text: e.message || "Something went wrong.",
+    });
+  } }
       }
 
       useEffect(() => { search(); }, []);
