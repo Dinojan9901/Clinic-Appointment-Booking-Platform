@@ -11,37 +11,41 @@
  * The individual services are NOT exposed to the host; every request
  * reaches them only through this gateway.
  */
-const express = require('express');
-const cors = require('cors');
-const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
-const jwt = require('jsonwebtoken');
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const express = require("express");
+const cors = require("cors");
+const morgan = require("morgan");
+const rateLimit = require("express-rate-limit");
+const jwt = require("jsonwebtoken");
+const { createProxyMiddleware } = require("http-proxy-middleware");
 
 const PORT = process.env.PORT || 8080;
-const JWT_SECRET = process.env.JWT_SECRET || 'mediconnect_dev_secret';
+const JWT_SECRET = process.env.JWT_SECRET || "mediconnect_dev_secret";
 
 const TARGETS = {
-  auth: process.env.AUTH_URL || 'http://localhost:4001',
-  appointment: process.env.APPOINTMENT_URL || 'http://localhost:4002',
-  records: process.env.RECORDS_URL || 'http://localhost:4003',
-  notification: process.env.NOTIFICATION_URL || 'http://localhost:4004',
+  auth: process.env.AUTH_URL || "http://localhost:4001",
+  appointment: process.env.APPOINTMENT_URL || "http://localhost:4002",
+  records: process.env.RECORDS_URL || "http://localhost:4003",
+  notification: process.env.NOTIFICATION_URL || "http://localhost:4004",
 };
 
 const app = express();
 app.use(cors());
-app.use(morgan('dev'));
+app.use(morgan("dev"));
 
 // Basic rate limiting (cross-cutting security concern).
-app.use(rateLimit({
-  windowMs: 60 * 1000,
-  max: 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later.' },
-}));
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests, please try again later." },
+  }),
+);
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'api-gateway' }));
+app.get("/health", (_req, res) =>
+  res.json({ status: "ok", service: "api-gateway" }),
+);
 
 /**
  * Authentication middleware.
@@ -49,17 +53,19 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'api-gateway
  * services as trusted headers (x-user-id / x-user-role / x-user-name).
  */
 function authenticate(req, res, next) {
-  const header = req.headers['authorization'] || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const header = req.headers["authorization"] || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) {
-    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    return res
+      .status(401)
+      .json({ error: "Missing or invalid Authorization header" });
   }
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     req.auth = payload; // { sub, role, name }
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
@@ -71,59 +77,87 @@ function withIdentity(proxyOptions) {
     on: {
       proxyReq: (proxyReq, req) => {
         if (req.auth) {
-          proxyReq.setHeader('x-user-id', String(req.auth.sub));
-          proxyReq.setHeader('x-user-role', req.auth.role || '');
-          proxyReq.setHeader('x-user-name', encodeURIComponent(req.auth.name || ''));
+          proxyReq.setHeader("x-user-id", String(req.auth.sub));
+          proxyReq.setHeader("x-user-role", req.auth.role || "");
+          proxyReq.setHeader(
+            "x-user-name",
+            encodeURIComponent(req.auth.name || ""),
+          );
         }
       },
       error: (err, _req, res) => {
         // Handle a service being unreachable gracefully.
         if (res && !res.headersSent) {
-          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.writeHead(502, { "Content-Type": "application/json" });
         }
-        res && res.end(JSON.stringify({ error: 'Upstream service unavailable' }));
+        res &&
+          res.end(JSON.stringify({ error: "Upstream service unavailable" }));
       },
     },
   });
 }
 
+function prefixPathRewrite(prefix) {
+  return (path) => {
+    if (!path || path === "/") {
+      return prefix;
+    }
+    return `${prefix}${path}`;
+  };
+}
+
 // -------- Public routes (no auth): Auth Service --------
-app.use('/api/auth', withIdentity({
-  target: TARGETS.auth,
-  pathRewrite: { '^/api/auth': '' },
-}));
+app.use(
+  "/api/auth",
+  withIdentity({
+    target: TARGETS.auth,
+    pathRewrite: { "^/api/auth": "" },
+  }),
+);
 
 // -------- Everything below requires a valid JWT --------
 app.use(authenticate);
 
-app.use('/api/doctors', withIdentity({
-  target: TARGETS.appointment,
-  pathRewrite: { '^/api/doctors': '/doctors' },
-}));
+app.use(
+  "/api/doctors",
+  withIdentity({
+    target: TARGETS.appointment,
+    pathRewrite: prefixPathRewrite("/doctors"),
+  }),
+);
 
-app.use('/api/appointments', withIdentity({
-  target: TARGETS.appointment,
-  pathRewrite: { '^/api/appointments': '/appointments' },
-}));
+app.use(
+  "/api/appointments",
+  withIdentity({
+    target: TARGETS.appointment,
+    pathRewrite: prefixPathRewrite("/appointments"),
+  }),
+);
 
-app.use('/api/records', withIdentity({
-  target: TARGETS.records,
-  pathRewrite: { '^/api/records': '/records' },
-}));
+app.use(
+  "/api/records",
+  withIdentity({
+    target: TARGETS.records,
+    pathRewrite: prefixPathRewrite("/records"),
+  }),
+);
 
-app.use('/api/notifications', withIdentity({
-  target: TARGETS.notification,
-  pathRewrite: { '^/api/notifications': '/notifications' },
-}));
+app.use(
+  "/api/notifications",
+  withIdentity({
+    target: TARGETS.notification,
+    pathRewrite: prefixPathRewrite("/notifications"),
+  }),
+);
 
 // Fallback 404 + central error handler.
-app.use((_req, res) => res.status(404).json({ error: 'Route not found' }));
+app.use((_req, res) => res.status(404).json({ error: "Route not found" }));
 app.use((err, _req, res, _next) => {
-  console.error('[gateway] error:', err.message);
-  res.status(500).json({ error: 'Internal gateway error' });
+  console.error("[gateway] error:", err.message);
+  res.status(500).json({ error: "Internal gateway error" });
 });
 
 app.listen(PORT, () => {
   console.log(`[api-gateway] listening on port ${PORT}`);
-  console.log('[api-gateway] routing table:', TARGETS);
+  console.log("[api-gateway] routing table:", TARGETS);
 });
