@@ -31,8 +31,11 @@ app.use((err, _req, res, _next) => {
 async function start() {
   await connectDB(MONGO_URL, 'appointment-service');
   await seedDoctors();
-  await connectRabbit(RABBIT_URL, 'appointment-service');
+  // Start serving HTTP immediately; connect to RabbitMQ in the background
+  // (retries until available) so REST endpoints are up even if the broker
+  // is still starting.
   app.listen(PORT, () => console.log(`[appointment-service] listening on port ${PORT}`));
+  connectRabbit(RABBIT_URL, 'appointment-service');
 }
 
 start();

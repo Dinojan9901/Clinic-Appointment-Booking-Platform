@@ -1,0 +1,167 @@
+% EC8208 CA03 - Prototype presentation Q&A with model answers (MediConnect)
+% Compile with: pdflatex
+\documentclass[11pt,a4paper]{article}
+\usepackage{newtxtext,newtxmath}
+\usepackage[T1]{fontenc}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+
+\definecolor{navy}{RGB}{20,52,95}
+\definecolor{steel}{RGB}{52,101,164}
+
+\titleformat{\section}{\large\bfseries\color{navy}}{}{0pt}{}
+\titlespacing{\section}{0pt}{10pt}{4pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\setlength{\headheight}{14pt}
+\fancyhead[L]{\small EC8208 -- CA03 Prototype Q\&A}
+\fancyhead[R]{\small MediConnect}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcounter{qq}
+\newcommand{\qa}[2]{%
+  \refstepcounter{qq}%
+  \textbf{\color{navy}Q\theqq. #1}\par
+  \vspace{1pt}{#2}\par\vspace{6pt}}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries\color{navy} CA03 Prototype -- Presentation Q\&A}\\[2pt]
+{\small MediConnect: Microservices Clinic Appointment Booking Platform (running prototype)}\\[2pt]
+{\small\itshape These are implementation/demo questions the panel is likely to ask in the
+5-minute Q\&A. Answer by pointing at the running system or the code, and be honest about
+simplifications.}
+\end{center}
+\vspace{4pt}
+\hrule
+
+\section{A. The prototype \& demo}
+
+\qa{What did you build, and how do you run it?}{%
+A running microservices prototype of MediConnect: a React single-page app, an API Gateway, and
+four Node.js/Express services (Auth, Appointment, Records, Notification), each with its own
+MongoDB database, plus RabbitMQ as an event bus. It is all containerised, so it starts with a
+single command, \code{docker compose up -{}-build}, and the web app opens at
+\code{localhost:3000}.}
+
+\qa{Walk us through a booking in your running system.}{%
+The patient logs in and searches for a doctor; the request goes through the gateway, which
+verifies the JWT, to the Appointment Service. That service checks the slot is free, reserves it,
+records a simulated payment, saves the appointment, and publishes an \code{appointment.booked}
+event to RabbitMQ. The Notification Service consumes it and creates a confirmation, and the
+Records Service consumes the same event and creates a pending consultation record. The doctor
+later completes that record with notes and a prescription, which the patient can then view.}
+
+\qa{Which three major functionalities does the prototype demonstrate?}{%
+(1) User registration and login with JWT-based authentication and roles; (2) doctor search and
+appointment booking; and (3) consultation records with digital prescriptions. Notifications add
+a fourth flow that showcases the event-driven part.}
+
+\section{B. Architecture in the code}
+
+\qa{How do your microservices actually communicate?}{%
+Two mechanisms. Synchronously over REST through the API Gateway for request/response, and there
+is one direct service-to-service REST call where the Records Service asks the Appointment
+Service to validate an appointment. Asynchronously through RabbitMQ: the Appointment Service
+publishes \code{appointment.booked}, and the Notification and Records services each consume it
+from their own queue -- a fan-out.}
+
+\qa{Show us the event-driven part -- how would you prove it works?}{%
+I open the RabbitMQ management UI at \code{localhost:15672}. After a booking, you can see the
+\code{mediconnect.events} exchange and two bound queues -- one for notifications and one for
+records -- each having received the message. In the container logs you also see the Appointment
+Service print ``published appointment.booked'' and the two consumers print that they received
+it.}
+
+\qa{How is each service structured internally?}{%
+Each service is layered: \code{routes.js} is the controller exposing the REST endpoints,
+\code{controller.js} holds the business logic and validation, \code{model.js} is the data-access
+layer using Mongoose, and \code{events.js} handles publishing or consuming RabbitMQ messages.
+This keeps a clear separation of concerns and matches the component diagram in our CA01 report.}
+
+\qa{You said database-per-service, but you only run one MongoDB container -- explain.}{%
+Each service connects to its \emph{own database} inside that MongoDB instance
+(\code{auth\_db}, \code{appointment\_db}, \code{records\_db}, \code{notification\_db}), and no
+service reads another's database. That gives the loose coupling of database-per-service. We kept
+a single MongoDB container to keep the prototype light; in production each could be a separate
+instance.}
+
+\section{C. The API Gateway}
+
+\qa{What does the API Gateway do in your prototype?}{%
+It is the only public entry point. It verifies the JWT on every protected route, routes the
+request to the correct service, injects the authenticated identity as trusted headers
+(\code{x-user-id}, \code{x-user-role}), and applies rate limiting. The services themselves are
+not exposed on the host -- they are only reachable inside the Docker network through the gateway.}
+
+\qa{How does the gateway know where to send each request?}{%
+It uses path-based routing with a reverse proxy: \code{/api/auth/*} goes to the Auth Service,
+\code{/api/doctors} and \code{/api/appointments} to the Appointment Service, \code{/api/records}
+to the Records Service, and \code{/api/notifications} to the Notification Service. It rewrites
+the path so, for example, \code{/api/doctors/123} arrives at the service as \code{/doctors/123}.}
+
+\qa{What was the hardest problem you solved?}{%
+The gateway path-rewriting. Because Express strips the mounted prefix, our first version sent the
+wrong path to the services (for example \code{/123} instead of \code{/doctors/123}), so the
+doctor search returned a 404 that the frontend showed as a parse error. We fixed it by rewriting
+the path with a function that re-adds the correct prefix, and verified it by checking the path
+each service actually receives.}
+
+\section{D. Security, errors, deployment}
+
+\qa{How is security implemented in the prototype?}{%
+Passwords are hashed with bcrypt; login returns a signed JWT that carries the user id and role.
+The gateway verifies that token on every protected route and forwards the identity to services,
+which enforce role-based rules (only a patient can book, only a doctor can complete a record).
+The gateway also rate-limits requests. In production we would add TLS and encryption at rest, as
+described in CA01.}
+
+\qa{How do you handle errors?}{%
+Each service validates input and returns proper HTTP status codes (for example 400 for bad
+input, 401 for no token, 404 for not found, 409 for a taken slot), and every service and the
+gateway has a central error-handling middleware. The gateway also returns a clean 502 if a
+service is unreachable, and the frontend shows friendly messages instead of crashing.}
+
+\qa{How is the prototype deployed, and how does it start reliably?}{%
+Docker Compose builds and runs seven containers -- the four services, the gateway, the frontend,
+MongoDB and RabbitMQ. MongoDB and RabbitMQ have health checks, the services \code{depend\_on}
+them being healthy, and each service also retries its database and broker connection, so the
+system comes up cleanly even though containers start at different times.}
+
+\qa{How does the frontend talk to the backend without CORS problems?}{%
+The React app is served by nginx, which proxies any \code{/api} request to the API Gateway. So
+the browser only ever calls its own origin (\code{localhost:3000}) and nginx forwards it
+internally -- there is no cross-origin request, so no CORS configuration is needed.}
+
+\section{E. Honesty \& reflection}
+
+\qa{Which parts are simplified compared to your CA01 design?}{%
+The prototype is all Node.js (the design also mentioned Spring Boot), uses MongoDB only (the
+design also used PostgreSQL for transactional data), runs on Docker Compose rather than
+Kubernetes, simulates the payment step, and the doctor view shows all records rather than a
+single doctor's. These are deliberate scope reductions so we could demonstrate the architecture
+within the timeframe.}
+
+\qa{What happens if the Notification Service is down during the demo?}{%
+Booking still works. The \code{appointment.booked} event stays in its durable RabbitMQ queue, and
+when the Notification Service comes back it processes the backlog, so no confirmation is lost.
+That is exactly the availability benefit of the event-driven design.}
+
+\qa{How would you take this prototype toward production?}{%
+Deploy the same containers on Kubernetes with the Horizontal Pod Autoscaler and multiple gateway
+replicas, split the transactional data onto PostgreSQL, add Redis caching and TLS, integrate a
+real payment provider, and add centralised logging and tracing to follow a request across
+services.}
+
+\end{document}

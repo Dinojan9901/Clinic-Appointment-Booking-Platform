@@ -1,0 +1,142 @@
+% EC8208 CA03 - One-page prototype demo & presentation cheat-sheet (MediConnect)
+% Compile with: pdflatex
+\documentclass[10pt,a4paper]{article}
+\usepackage{newtxtext,newtxmath}
+\usepackage[T1]{fontenc}
+\usepackage[a4paper,margin=0.5in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{multicol}
+
+\definecolor{navy}{RGB}{20,52,95}
+\definecolor{steel}{RGB}{52,101,164}
+\definecolor{grayln}{RGB}{120,120,120}
+
+\titleformat{\section}{\bfseries\small\color{navy}}{}{0pt}{}
+\titlespacing{\section}{0pt}{4pt}{2pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{2pt}
+\pagestyle{empty}
+\renewcommand{\arraystretch}{1.1}
+\setlist[itemize]{leftmargin=1.1em,itemsep=0pt,topsep=1pt,parsep=0pt}
+
+\newcommand{\hd}[1]{\textbf{\color{navy}#1}}
+\newcommand{\code}[1]{\texttt{\footnotesize #1}}
+
+\begin{document}
+
+{\centering
+{\large\bfseries\color{navy} EC8208 -- CA03 Prototype Demo \& Presentation Cheat-Sheet}\\
+{\footnotesize\color{grayln} MediConnect -- Microservices Clinic Appointment Booking Platform (running prototype)}\par}
+\vspace{2pt}
+\hrule
+\vspace{3pt}
+
+\begin{multicols}{2}
+
+\section{30-Second Pitch}
+{\footnotesize A \textbf{running microservices prototype} of MediConnect. A \textbf{React SPA}
+calls an \textbf{API Gateway} that routes to \textbf{4 independent Node.js services} (Auth,
+Appointment, Records, Notification). Each owns its \textbf{own MongoDB database}. Services talk
+\textbf{synchronously via REST} and \textbf{asynchronously via RabbitMQ}. Everything runs with
+\textbf{one command} using \textbf{Docker Compose}.}
+
+\section{Run It (deployment demo)}
+{\footnotesize
+\code{cd CA03\_Prototype}\\
+\code{docker compose up -{}-build}\\[2pt]
+\hd{Web app} \code{localhost:3000} \textbullet{} \hd{Gateway} \code{:8080}\\
+\hd{RabbitMQ UI} \code{:15672} (guest/guest) -- show events live!}
+
+\section{Demo Script (say this while clicking)}
+{\footnotesize
+\begin{enumerate}[leftmargin=1.3em,itemsep=0pt,topsep=1pt]
+  \item Register + login as \hd{patient} (Auth issues a JWT).
+  \item \hd{Find a Doctor} $\rightarrow$ Book a slot (Appointment reserves slot, simulates
+        payment, \textbf{publishes} \code{appointment.booked}).
+  \item Show \hd{My Appointments} + \hd{Notifications} (created \emph{async} from the event).
+  \item Login as \hd{doctor} $\rightarrow$ \hd{Consultation Records} (record auto-created from
+        same event) $\rightarrow$ add notes + prescription $\rightarrow$ Complete.
+  \item Back as patient $\rightarrow$ \hd{My Records} $\rightarrow$ prescription now shows.
+  \item Open \hd{RabbitMQ UI} $\rightarrow$ show the two queues that consumed the event.
+\end{enumerate}}
+
+\section{Communication (know this cold)}
+{\footnotesize
+\begin{itemize}
+  \item \hd{Sync (REST):} Browser $\rightarrow$ Gateway $\rightarrow$ service. Plus
+        Records $\rightarrow$ Appointment (validate appointment).
+  \item \hd{Async (events):} Appointment \textbf{publishes} \code{appointment.booked};
+        Notification + Records \textbf{consume} it independently (fan-out via RabbitMQ topic
+        exchange \code{mediconnect.events}).
+\end{itemize}}
+
+\columnbreak
+
+\section{Services (each = own DB, layered)}
+{\scriptsize
+\begin{tabular}{@{}>{\bfseries}p{2.05cm} p{0.75cm} p{4.6cm}@{}}
+\toprule
+\textbf{Service} & \textbf{Port} & \textbf{Does / key endpoints}\\
+\midrule
+Auth & 4001 & register, login, JWT \code{/api/auth/*}\\
+Appointment & 4002 & doctor search, booking, publishes event\\
+Records & 4003 & consult notes + e-prescription \code{/api/records}\\
+Notification & 4004 & booking confirmations \code{/api/notifications}\\
+API Gateway & 8080 & JWT, routing, rate limit\\
+MongoDB & 27017 & one DB per service\\
+RabbitMQ & 5672 & event bus (+UI 15672)\\
+\bottomrule
+\end{tabular}}
+
+\section{Layered Code (per service)}
+{\footnotesize \code{routes.js} (controller) $\rightarrow$ \code{controller.js} (business logic)
+$\rightarrow$ \code{model.js} (data access) $\rightarrow$ \code{events.js} (publish/consume).}
+
+\section{Security in the Prototype}
+{\footnotesize JWT issued by Auth (\code{jsonwebtoken}); \textbf{Gateway verifies} every protected
+route, forwards identity as \code{x-user-id/role} headers; \textbf{bcrypt} password hashing;
+\textbf{role-based} checks (patient/doctor); gateway \textbf{rate limiting}.}
+
+\section{CA03 Rubric Coverage}
+{\footnotesize UI (React) \textbullet{} Business logic (\code{controller.js}) \textbullet{}
+Data layer (MongoDB models) \textbullet{} 3+ functions (auth, book, records) \textbullet{}
+error handling (validation + central middleware) \textbullet{} security (JWT/bcrypt/RBAC)
+\textbullet{} deployment (Docker Compose).}
+
+\section{Honest Simplifications (own them)}
+{\footnotesize All-Node (no Spring Boot) \textbullet{} MongoDB only (design also had PostgreSQL)
+\textbullet{} Docker Compose (design: Kubernetes) \textbullet{} payment simulated \textbullet{}
+doctor view shows all records.}
+
+\end{multicols}
+
+\vspace{1pt}
+\section{Talking Points -- Key Implementation Decisions (Choice $\rightarrow$ Why $\rightarrow$ Trade-off)}
+\vspace{1pt}
+{\scriptsize
+\begin{tabular}{@{}>{\bfseries}p{2.7cm} p{6.4cm} p{6.6cm}@{}}
+\toprule
+\textbf{Decision} & \textbf{Why (in the prototype)} & \textbf{Trade-off / honest note}\\
+\midrule
+API Gateway only public & Single entry; JWT + routing + rate limit; services hidden on the
+Docker network & Gateway is a SPOF -- would replicate it in production\\
+DB-per-service (one MongoDB, separate DB names) & Demonstrates loose coupling; each service owns
+\code{auth\_db}, \code{appointment\_db}, etc. & Logical (not physical) separation to keep the demo
+light\\
+RabbitMQ events (fan-out) & Booking stays fast; notification + record creation happen
+asynchronously; resilient if a consumer is down & Eventual consistency; a broker to run\\
+Docker Compose & One-command deploy of 7 containers with health checks + retry logic &
+Not full Kubernetes/HPA (that is the CA01 production design)\\
+nginx proxies \code{/api} to gateway & Frontend calls relative \code{/api}; same-origin, so no
+CORS issues & Extra nginx container in front of the SPA\\
+Gateway path rewrite (function-based) & Correctly maps \code{/api/doctors/123} to
+\code{/doctors/123} after Express strips the mount path & (A real bug we found and fixed -- good
+``hardest problem'' story)\\
+\bottomrule
+\end{tabular}}
+
+\end{document}

@@ -28,8 +28,10 @@ app.use((err, _req, res, _next) => {
 
 async function start() {
   await connectDB(MONGO_URL, 'notification-service');
-  await connectRabbit(RABBIT_URL, 'notification-service');
+  // Serve HTTP immediately; connect + consume from RabbitMQ in the background
+  // (retries until available).
   app.listen(PORT, () => console.log(`[notification-service] listening on port ${PORT}`));
+  connectRabbit(RABBIT_URL, 'notification-service');
 }
 
 start();

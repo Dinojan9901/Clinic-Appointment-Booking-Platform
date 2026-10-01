@@ -29,8 +29,10 @@ app.use((err, _req, res, _next) => {
 
 async function start() {
   await connectDB(MONGO_URL, 'records-service');
-  await connectRabbit(RABBIT_URL, 'records-service');
+  // Serve HTTP immediately; connect + consume from RabbitMQ in the background
+  // (retries until available).
   app.listen(PORT, () => console.log(`[records-service] listening on port ${PORT}`));
+  connectRabbit(RABBIT_URL, 'records-service');
 }
 
 start();

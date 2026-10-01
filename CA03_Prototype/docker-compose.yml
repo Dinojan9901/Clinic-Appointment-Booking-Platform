@@ -15,29 +15,49 @@ services:
 
   # ---------- Infrastructure ----------
   mongodb:
-    image: mongo:7
+    # MongoDB 5.0+ needs a CPU with AVX; 4.4 is the last version that runs
+    # without it (this machine's CPU has no AVX). Fully compatible with the code.
+    image: mongo:4.4
     container_name: mc-mongodb
-    ports:
-      - "27017:27017"
+    # Not published to the host to avoid clashing with any local MongoDB or
+    # another project's container on 27017. Services reach it over the internal
+    # Docker network as mongodb:27017. (Add a "ports:" mapping only if you want
+    # to inspect it from the host with MongoDB Compass.)
+    expose:
+      - "27017"
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongo", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 6
+      start_period: 40s
 
   rabbitmq:
     image: rabbitmq:3-management
     container_name: mc-rabbitmq
+    hostname: rabbitmq
+    # Pre-create the Erlang cookie owned by the rabbitmq user before startup.
+    # On this Docker Desktop setup the default handling leaves the cookie
+    # root-owned and unreadable, causing ".erlang.cookie: eacces". Writing it
+    # ourselves with the right ownership/permissions avoids that.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - "printf mediconnectcookie > /var/lib/rabbitmq/.erlang.cookie && chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && exec docker-entrypoint.sh rabbitmq-server"
     ports:
-      - "5672:5672"     # AMQP
-      - "15672:15672"   # Management UI
+      - "15672:15672"   # Management UI (AMQP 5672 stays internal to the network)
+    expose:
+      - "5672"
     healthcheck:
+      # This CPU is slow: RabbitMQ takes ~155s to boot and the diagnostics CLI
+      # itself is heavy, so the timeout/start_period must be generous.
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
+      interval: 15s
+      timeout: 30s
+      retries: 5
+      start_period: 200s
 
   # ---------- Microservices (each owns its own database) ----------
   auth-service:
@@ -100,7 +120,10 @@ services:
     build: ./api-gateway
     container_name: mc-gateway
     ports:
-      - "8080:8080"
+      # Host 8090 -> container 8080 (host 8080 is used by another app on this
+      # machine). The frontend reaches the gateway internally as api-gateway:8080,
+      # so this host mapping is only for hitting the gateway directly.
+      - "8090:8080"
     environment:
       PORT: 8080
       JWT_SECRET: mediconnect_dev_secret

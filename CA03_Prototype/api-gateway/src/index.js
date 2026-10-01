@@ -49,8 +49,11 @@ app.get("/health", (_req, res) =>
 
 /**
  * Authentication middleware.
- * Verifies the Bearer token and forwards the identity to downstream
- * services as trusted headers (x-user-id / x-user-role / x-user-name).
+ * Verifies the Bearer token and attaches the identity to the request headers
+ * (x-user-id / x-user-role / x-user-name) so downstream services can trust it.
+ * Setting the headers on req.headers here (rather than in the proxy's
+ * `on.proxyReq` hook) makes them forward reliably for POST/PUT requests that
+ * carry a body.
  */
 function authenticate(req, res, next) {
   const header = req.headers["authorization"] || "";
@@ -62,31 +65,22 @@ function authenticate(req, res, next) {
   }
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.auth = payload; // { sub, role, name }
+    req.headers["x-user-id"] = String(payload.sub);
+    req.headers["x-user-role"] = payload.role || "";
+    req.headers["x-user-name"] = encodeURIComponent(payload.name || "");
     next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
-// Inject the authenticated identity into the proxied request.
-function withIdentity(proxyOptions) {
+// Proxy factory with a graceful "upstream unavailable" handler.
+function proxyTo(proxyOptions) {
   return createProxyMiddleware({
     changeOrigin: true,
     ...proxyOptions,
     on: {
-      proxyReq: (proxyReq, req) => {
-        if (req.auth) {
-          proxyReq.setHeader("x-user-id", String(req.auth.sub));
-          proxyReq.setHeader("x-user-role", req.auth.role || "");
-          proxyReq.setHeader(
-            "x-user-name",
-            encodeURIComponent(req.auth.name || ""),
-          );
-        }
-      },
       error: (err, _req, res) => {
-        // Handle a service being unreachable gracefully.
         if (res && !res.headersSent) {
           res.writeHead(502, { "Content-Type": "application/json" });
         }
@@ -98,18 +92,13 @@ function withIdentity(proxyOptions) {
 }
 
 function prefixPathRewrite(prefix) {
-  return (path) => {
-    if (!path || path === "/") {
-      return prefix;
-    }
-    return `${prefix}${path}`;
-  };
+  return (path) => (!path || path === "/" ? prefix : `${prefix}${path}`);
 }
 
 // -------- Public routes (no auth): Auth Service --------
 app.use(
   "/api/auth",
-  withIdentity({
+  proxyTo({
     target: TARGETS.auth,
     pathRewrite: { "^/api/auth": "" },
   }),
@@ -120,7 +109,7 @@ app.use(authenticate);
 
 app.use(
   "/api/doctors",
-  withIdentity({
+  proxyTo({
     target: TARGETS.appointment,
     pathRewrite: prefixPathRewrite("/doctors"),
   }),
@@ -128,7 +117,7 @@ app.use(
 
 app.use(
   "/api/appointments",
-  withIdentity({
+  proxyTo({
     target: TARGETS.appointment,
     pathRewrite: prefixPathRewrite("/appointments"),
   }),
@@ -136,7 +125,7 @@ app.use(
 
 app.use(
   "/api/records",
-  withIdentity({
+  proxyTo({
     target: TARGETS.records,
     pathRewrite: prefixPathRewrite("/records"),
   }),
@@ -144,7 +133,7 @@ app.use(
 
 app.use(
   "/api/notifications",
-  withIdentity({
+  proxyTo({
     target: TARGETS.notification,
     pathRewrite: prefixPathRewrite("/notifications"),
   }),
