@@ -1,6 +1,7 @@
 /**
  * MediConnect - Notification Service (bootstrap)
- * Consumes "appointment.booked" events and stores confirmation notifications.
+ * Consumes "appointment.booked" / "appointment.cancelled" events and stores
+ * the matching patient notifications.
  */
 const express = require('express');
 const cors = require('cors');

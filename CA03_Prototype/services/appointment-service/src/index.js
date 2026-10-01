@@ -1,12 +1,13 @@
 /**
  * MediConnect - Appointment Service (bootstrap)
- * Owns doctor/clinic data and appointments; publishes "appointment.booked".
+ * Owns doctor/clinic data and appointments; publishes "appointment.booked"
+ * and "appointment.cancelled" via a transactional outbox.
  */
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const connectDB = require('./db');
-const { connectRabbit } = require('./events');
+const { connectRabbit, startOutboxRelay } = require('./events');
 const seedDoctors = require('./seed');
 const { doctors, appointments } = require('./routes');
 
@@ -24,6 +25,8 @@ app.use('/doctors', doctors);
 app.use('/appointments', appointments);
 
 app.use((err, _req, res, _next) => {
+  // Malformed ids (e.g. /appointments/abc) are a client error, not a crash.
+  if (err.name === 'CastError') return res.status(400).json({ error: 'invalid id' });
   console.error('[appointment-service] error:', err.message);
   res.status(500).json({ error: 'internal server error' });
 });
@@ -36,6 +39,7 @@ async function start() {
   // is still starting.
   app.listen(PORT, () => console.log(`[appointment-service] listening on port ${PORT}`));
   connectRabbit(RABBIT_URL, 'appointment-service');
+  startOutboxRelay();
 }
 
 start();

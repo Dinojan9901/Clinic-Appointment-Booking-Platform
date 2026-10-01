@@ -1,8 +1,12 @@
 /**
- * Messaging layer (consumer): subscribes to "appointment.booked".
- * When a patient books, this service automatically creates a pending
- * consultation record for the doctor to complete after the visit. This
- * demonstrates asynchronous, decoupled inter-service communication.
+ * Messaging layer (consumer): subscribes to appointment lifecycle events.
+ *  - appointment.booked    -> create a pending consultation record for the
+ *                             doctor to complete after the visit.
+ *  - appointment.cancelled -> mark that pending record as cancelled.
+ * This demonstrates asynchronous, decoupled inter-service communication.
+ *
+ * Delivery is at-least-once (the publisher uses a transactional outbox), so
+ * both handlers are idempotent: processing the same event twice is harmless.
  *
  * Connection is retried indefinitely and re-established automatically if it
  * drops, so the consumer is resilient to RabbitMQ starting slowly or
@@ -12,7 +16,35 @@ const amqp = require('amqplib');
 const Record = require('./model');
 
 const EXCHANGE = 'mediconnect.events';
-const QUEUE = 'records.appointment-booked';
+const QUEUE = 'records.appointment-events';
+
+const handlers = {
+  // Upsert keyed on the unique appointmentId -> duplicates are no-ops.
+  'appointment.booked': (evt) =>
+    Record.updateOne(
+      { appointmentId: evt.appointmentId },
+      {
+        $setOnInsert: {
+          appointmentId: evt.appointmentId,
+          patientId: evt.patientId,
+          patientName: evt.patientName,
+          doctorId: evt.doctorId,
+          doctorName: evt.doctorName,
+          doctorEmail: evt.doctorEmail,
+          clinicName: evt.clinicName,
+          visitDate: evt.slot,
+          status: 'pending',
+        },
+      },
+      { upsert: true }
+    ),
+  // Only a still-pending record is cancelled; a completed one is kept.
+  'appointment.cancelled': (evt) =>
+    Record.updateOne(
+      { appointmentId: evt.appointmentId, status: 'pending' },
+      { $set: { status: 'cancelled' } }
+    ),
+};
 
 async function connectRabbit(url, name = 'records-service') {
   let attempt = 0;
@@ -23,33 +55,22 @@ async function connectRabbit(url, name = 'records-service') {
       const channel = await conn.createChannel();
       await channel.assertExchange(EXCHANGE, 'topic', { durable: true });
       const q = await channel.assertQueue(QUEUE, { durable: true });
-      await channel.bindQueue(q.queue, EXCHANGE, 'appointment.booked');
+      for (const key of Object.keys(handlers)) {
+        await channel.bindQueue(q.queue, EXCHANGE, key);
+      }
 
       channel.consume(q.queue, async (msg) => {
         if (!msg) return;
+        const key = msg.fields.routingKey;
         try {
           const evt = JSON.parse(msg.content.toString());
-          console.log('[records-service] received appointment.booked', evt.appointmentId);
-          await Record.updateOne(
-            { appointmentId: evt.appointmentId },
-            {
-              $setOnInsert: {
-                appointmentId: evt.appointmentId,
-                patientId: evt.patientId,
-                patientName: evt.patientName,
-                doctorId: evt.doctorId,
-                doctorName: evt.doctorName,
-                clinicName: evt.clinicName,
-                visitDate: evt.slot,
-                status: 'pending',
-              },
-            },
-            { upsert: true }
-          );
+          console.log(`[records-service] received ${key}`, evt.appointmentId);
+          await handlers[key](evt);
           channel.ack(msg);
         } catch (err) {
-          console.error('[records-service] failed to process event:', err.message);
-          channel.nack(msg, false, false); // drop poison message
+          console.error(`[records-service] failed to process ${key}:`, err.message);
+          // Retry once (e.g. a transient DB error); drop it if it fails again.
+          channel.nack(msg, false, !msg.fields.redelivered);
         }
       });
 

@@ -16,11 +16,12 @@ const recordSchema = new mongoose.Schema(
     patientName: { type: String, required: true },
     doctorId: { type: String, required: true },
     doctorName: { type: String, required: true },
+    doctorEmail: { type: String, index: true }, // scopes records to their doctor
     clinicName: { type: String },
     visitDate: { type: String }, // the appointment slot
     notes: { type: String, default: '' },
     prescription: { type: [medicationSchema], default: [] },
-    status: { type: String, enum: ['pending', 'completed'], default: 'pending' },
+    status: { type: String, enum: ['pending', 'completed', 'cancelled'], default: 'pending' },
   },
   { timestamps: true }
 );

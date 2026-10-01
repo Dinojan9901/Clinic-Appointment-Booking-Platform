@@ -8,6 +8,7 @@ function identity(req) {
     userId: req.headers['x-user-id'],
     role: req.headers['x-user-role'],
     name: decodeURIComponent(req.headers['x-user-name'] || ''),
+    email: req.headers['x-user-email'] || '',
   };
 }
 
@@ -23,12 +24,12 @@ async function myRecords(req, res, next) {
   }
 }
 
-// GET /records/doctor  (all records - doctor view, demo)
+// GET /records/doctor  (records of the logged-in doctor's patients only)
 async function doctorRecords(req, res, next) {
   try {
-    const { role } = identity(req);
+    const { role, email } = identity(req);
     if (role !== 'doctor') return res.status(403).json({ error: 'doctor role required' });
-    const records = await Record.find().sort({ status: 1, createdAt: -1 });
+    const records = await Record.find({ doctorEmail: email }).sort({ status: 1, createdAt: -1 });
     res.json(records);
   } catch (err) {
     next(err);
@@ -38,28 +39,59 @@ async function doctorRecords(req, res, next) {
 // PUT /records/:id   { notes, prescription:[{medication,dosage}] }
 async function completeRecord(req, res, next) {
   try {
-    const { role } = identity(req);
+    const { role, email } = identity(req);
     if (role !== 'doctor') {
       return res.status(403).json({ error: 'only doctors can complete records' });
     }
     const record = await Record.findById(req.params.id);
     if (!record) return res.status(404).json({ error: 'record not found' });
+    if (!email || record.doctorEmail !== email) {
+      return res.status(403).json({ error: 'this record belongs to another doctor' });
+    }
+    if (record.status === 'cancelled') {
+      return res.status(409).json({ error: 'appointment was cancelled' });
+    }
 
     // --- Synchronous inter-service call (REST) ---
-    // Confirm with the Appointment Service that the appointment is valid
-    // before writing the clinical record. This shows synchronous
-    // service-to-service communication alongside the async event flow.
+    // Ask the Appointment Service (which owns appointment state) to mark the
+    // appointment completed. It does an atomic booked -> completed transition,
+    // so a concurrent patient cancel and this completion cannot both succeed,
+    // and a completed appointment can no longer be cancelled. The caller's
+    // identity is propagated so the Appointment Service applies its own
+    // authorisation. The call is idempotent, so a retry is safe.
+    //
+    // This FAILS CLOSED: if the Appointment Service is unreachable we refuse
+    // to write rather than risk recording a cancelled visit. For a clinical
+    // record, consistency is worth more than availability - the doctor simply
+    // retries in a moment.
+    let resp;
     try {
-      const resp = await fetch(`${APPOINTMENT_URL}/appointments/${record.appointmentId}`);
-      if (resp.ok) {
-        const appt = await resp.json();
-        if (appt.status === 'cancelled') {
-          return res.status(409).json({ error: 'appointment was cancelled' });
-        }
-      }
+      resp = await fetch(`${APPOINTMENT_URL}/appointments/${record.appointmentId}/complete`, {
+        method: 'POST',
+        headers: {
+          'x-user-id': req.headers['x-user-id'] || '',
+          'x-user-role': req.headers['x-user-role'] || '',
+          'x-user-name': req.headers['x-user-name'] || '',
+          'x-user-email': email,
+        },
+        signal: AbortSignal.timeout(3000),
+      });
     } catch (e) {
       console.warn('[records-service] could not verify appointment:', e.message);
-      // Non-fatal for the prototype; continue.
+      return res.status(503).json({
+        error: 'cannot verify the appointment right now (Appointment Service unavailable); please try again',
+      });
+    }
+    if (resp.status === 404) {
+      return res.status(409).json({ error: 'appointment no longer exists' });
+    }
+    if (resp.status === 403 || resp.status === 409) {
+      // Not this doctor's appointment, or the patient cancelled it.
+      const body = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({ error: body.error || 'appointment cannot be completed' });
+    }
+    if (!resp.ok) {
+      return res.status(502).json({ error: `appointment verification failed (${resp.status})` });
     }
 
     const { notes, prescription } = req.body || {};

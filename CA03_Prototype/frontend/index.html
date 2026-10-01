@@ -73,7 +73,7 @@
     // ---------- Auth screen ----------
     function AuthView({ onLogin }) {
       const [mode, setMode] = useState('login');
-      const [form, setForm] = useState({ name: '', email: '', password: '', role: 'patient' });
+      const [form, setForm] = useState({ name: '', email: '', password: '' });
       const [err, setErr] = useState('');
       const [busy, setBusy] = useState(false);
       const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -111,11 +111,7 @@
                 <div>
                   <label>Full name</label>
                   <input value={form.name} onChange={set('name')} required />
-                  <label>Register as</label>
-                  <select value={form.role} onChange={set('role')}>
-                    <option value="patient">Patient</option>
-                    <option value="doctor">Doctor</option>
-                  </select>
+                  <p className="muted" style={{ marginTop: 0 }}>New accounts are patient accounts. Doctor accounts are created by the clinic.</p>
                 </div>
               )}
               <label>Email</label>
@@ -125,6 +121,13 @@
               <button type="submit" disabled={busy}>{busy ? 'Please wait...' : (mode === 'login' ? 'Login' : 'Create account')}</button>
             </form>
           </div>
+          {mode === 'login' && (
+            <div className="card muted">
+              <strong>Demo doctor logins</strong> (password <code>doctor123</code>):<br />
+              anushka.perera@mediconnect.lk &middot; suresh.kumar@mediconnect.lk<br />
+              fathima.nazeer@mediconnect.lk &middot; rajitha.silva@mediconnect.lk
+            </div>
+          )}
         </div>
       );
     }
@@ -309,7 +312,7 @@
       return (
         <div className="card">
           <h2>Consultation Records</h2>
-          <p className="muted">Records are auto-created (via events) when patients book. Add notes and a prescription after the in-clinic visit.</p>
+          <p className="muted">Records for your patients are auto-created (via events) when they book, and marked cancelled if they cancel. Add notes and a prescription after the in-clinic visit.</p>
           {msg && <div className={'msg ' + (msg.type === 'ok' ? 'ok' : 'err')}>{msg.text}</div>}
           {items.length === 0 && <p className="muted">No records yet.</p>}
           {items.map((r) => (
@@ -321,6 +324,8 @@
                   <div><strong>Notes:</strong> {r.notes}</div>
                   <div><strong>Prescription:</strong> {r.prescription.map((p, i) => <span key={i}>{p.medication} {p.dosage}; </span>)}</div>
                 </div>
+              ) : r.status === 'cancelled' ? (
+                <div className="muted" style={{ marginTop: 6 }}>The patient cancelled this appointment.</div>
               ) : (
                 <div style={{ marginTop: 8 }}>
                   <label>Consultation notes</label>

@@ -4,26 +4,26 @@ const jwt = require('jsonwebtoken');
 const User = require('./model');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'mediconnect_dev_secret';
-const ROLES = ['patient', 'doctor', 'admin'];
 
 async function register(req, res, next) {
   try {
-    const { name, email, password, role } = req.body || {};
+    // Any "role" in the body is ignored: public self-registration only ever
+    // creates patients. Doctor accounts are provisioned by the clinic (seeded
+    // in this prototype), so nobody can grant themselves doctor/admin rights.
+    const { name, email, password } = req.body || {};
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'name, email and password are required' });
     }
     if (password.length < 6) {
       return res.status(400).json({ error: 'password must be at least 6 characters' });
     }
-    const requestedRole = ROLES.includes(role) ? role : 'patient';
-
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
       return res.status(409).json({ error: 'email already registered' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({ name, email, passwordHash, role: requestedRole });
+    const user = await User.create({ name, email, passwordHash, role: 'patient' });
 
     return res.status(201).json({
       id: user._id,
@@ -52,7 +52,7 @@ async function login(req, res, next) {
     }
 
     const token = jwt.sign(
-      { sub: user._id.toString(), role: user.role, name: user.name },
+      { sub: user._id.toString(), role: user.role, name: user.name, email: user.email },
       JWT_SECRET,
       { expiresIn: '2h' }
     );

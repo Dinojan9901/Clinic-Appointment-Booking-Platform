@@ -7,6 +7,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const connectDB = require('./db');
 const routes = require('./routes');
+const seedDoctorAccounts = require('./seed');
 
 const PORT = process.env.PORT || 4001;
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/auth_db';
@@ -25,6 +26,8 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'internal server error' });
 });
 
-connectDB(MONGO_URL, 'auth-service').then(() => {
-  app.listen(PORT, () => console.log(`[auth-service] listening on port ${PORT}`));
-});
+connectDB(MONGO_URL, 'auth-service')
+  .then(seedDoctorAccounts)
+  .then(() => {
+    app.listen(PORT, () => console.log(`[auth-service] listening on port ${PORT}`));
+  });

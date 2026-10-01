@@ -1,7 +1,7 @@
 /**
  * MediConnect - Records Service (bootstrap)
- * Consumes "appointment.booked" (async) and calls the Appointment Service
- * (sync) when a doctor completes a consultation record.
+ * Consumes "appointment.booked" / "appointment.cancelled" (async) and calls
+ * the Appointment Service (sync) when a doctor completes a consultation record.
  */
 const express = require('express');
 const cors = require('cors');
@@ -23,6 +23,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'records-ser
 app.use('/records', routes);
 
 app.use((err, _req, res, _next) => {
+  if (err.name === 'CastError') return res.status(400).json({ error: 'invalid id' });
   console.error('[records-service] error:', err.message);
   res.status(500).json({ error: 'internal server error' });
 });

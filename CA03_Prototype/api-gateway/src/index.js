@@ -47,10 +47,20 @@ app.get("/health", (_req, res) =>
   res.json({ status: "ok", service: "api-gateway" }),
 );
 
+// Identity headers are trusted by the services, so only the gateway may set
+// them. Strip any client-supplied copies from EVERY request (including the
+// public /api/auth routes) before routing, so they cannot be spoofed.
+const IDENTITY_HEADERS = ["x-user-id", "x-user-role", "x-user-name", "x-user-email"];
+app.use((req, _res, next) => {
+  for (const h of IDENTITY_HEADERS) delete req.headers[h];
+  next();
+});
+
 /**
  * Authentication middleware.
  * Verifies the Bearer token and attaches the identity to the request headers
- * (x-user-id / x-user-role / x-user-name) so downstream services can trust it.
+ * (x-user-id / x-user-role / x-user-name / x-user-email) so downstream
+ * services can trust it.
  * Setting the headers on req.headers here (rather than in the proxy's
  * `on.proxyReq` hook) makes them forward reliably for POST/PUT requests that
  * carry a body.
@@ -68,6 +78,7 @@ function authenticate(req, res, next) {
     req.headers["x-user-id"] = String(payload.sub);
     req.headers["x-user-role"] = payload.role || "";
     req.headers["x-user-name"] = encodeURIComponent(payload.name || "");
+    req.headers["x-user-email"] = payload.email || "";
     next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid or expired token" });
@@ -95,7 +106,8 @@ function prefixPathRewrite(prefix) {
   return (path) => (!path || path === "/" ? prefix : `${prefix}${path}`);
 }
 
-// -------- Public routes (no auth): Auth Service --------
+// -------- Auth Service: register/login are public, /me needs a JWT --------
+app.use("/api/auth/me", authenticate);
 app.use(
   "/api/auth",
   proxyTo({

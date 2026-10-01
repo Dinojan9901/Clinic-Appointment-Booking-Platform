@@ -11,6 +11,7 @@ appointments.post('/', c.bookAppointment);
 appointments.get('/mine', c.myAppointments);
 appointments.get('/doctor', c.doctorAppointments);
 appointments.get('/:id', c.getAppointment);
+appointments.post('/:id/complete', c.completeAppointment);
 appointments.post('/:id/cancel', c.cancelAppointment);
 
 module.exports = { doctors, appointments };

@@ -1,9 +1,13 @@
-/** Seeds demo doctors/clinics so the search returns results on first run. */
+/**
+ * Seeds demo doctors/clinics so the search returns results on first run.
+ * Emails match the doctor login accounts seeded by the Auth Service.
+ */
 const { Doctor } = require('./models');
 
 const SAMPLE = [
   {
     name: 'Dr. Anushka Perera',
+    email: 'anushka.perera@mediconnect.lk',
     speciality: 'Cardiology',
     clinicName: 'HeartCare Clinic',
     clinicAddress: '12 Galle Road, Colombo 03',
@@ -14,6 +18,7 @@ const SAMPLE = [
   },
   {
     name: 'Dr. Suresh Kumar',
+    email: 'suresh.kumar@mediconnect.lk',
     speciality: 'Dermatology',
     clinicName: 'SkinHealth Center',
     clinicAddress: '45 Temple Road, Jaffna',
@@ -24,6 +29,7 @@ const SAMPLE = [
   },
   {
     name: 'Dr. Fathima Nazeer',
+    email: 'fathima.nazeer@mediconnect.lk',
     speciality: 'Pediatrics',
     clinicName: 'LittleOnes Clinic',
     clinicAddress: '8 Main Street, Kandy',
@@ -34,6 +40,7 @@ const SAMPLE = [
   },
   {
     name: 'Dr. Rajitha Silva',
+    email: 'rajitha.silva@mediconnect.lk',
     speciality: 'Cardiology',
     clinicName: 'City Heart Institute',
     clinicAddress: '90 Lake Road, Kandy',
@@ -45,13 +52,16 @@ const SAMPLE = [
 ];
 
 async function seedDoctors() {
-  const count = await Doctor.countDocuments();
-  if (count > 0) {
-    console.log(`[appointment-service] doctors already seeded (${count})`);
-    return;
+  // Upsert by name so existing databases also get the doctor email (the key
+  // that links a profile to the doctor's login) without re-seeding slots.
+  for (const { email, ...profile } of SAMPLE) {
+    await Doctor.updateOne(
+      { name: profile.name },
+      { $set: { email }, $setOnInsert: profile },
+      { upsert: true }
+    );
   }
-  await Doctor.insertMany(SAMPLE);
-  console.log(`[appointment-service] seeded ${SAMPLE.length} demo doctors`);
+  console.log(`[appointment-service] ${SAMPLE.length} demo doctors ready`);
 }
 
 module.exports = seedDoctors;
