@@ -20,7 +20,7 @@ const recordSchema = new mongoose.Schema(
     visitDate: { type: String }, // the appointment slot
     notes: { type: String, default: '' },
     prescription: { type: [medicationSchema], default: [] },
-    status: { type: String, enum: ['pending', 'completed'], default: 'pending' },
+    status: { type: String, enum: ['pending', 'completed', 'cancelled'], default: 'pending' },
   },
   { timestamps: true }
 );

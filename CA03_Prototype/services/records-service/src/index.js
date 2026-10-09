@@ -9,6 +9,7 @@ const morgan = require('morgan');
 const connectDB = require('./db');
 const { connectRabbit } = require('./events');
 const routes = require('./routes');
+const Record = require('./model');
 
 const PORT = process.env.PORT || 4003;
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/records_db';
@@ -29,7 +30,13 @@ app.use((err, _req, res, _next) => {
 
 async function start() {
   await connectDB(MONGO_URL, 'records-service');
-  await connectRabbit(RABBIT_URL, 'records-service');
+  // Repair records completed by the previous behavior without consultation notes.
+  const repaired = await Record.updateMany(
+    { status: 'completed', $or: [{ notes: { $exists: false } }, { notes: '' }, { notes: null }] },
+    { $set: { status: 'pending' } }
+  );
+  if (repaired.modifiedCount) console.log(`[records-service] reset ${repaired.modifiedCount} records missing consultation notes`);
+  connectRabbit(RABBIT_URL, 'records-service');
   app.listen(PORT, () => console.log(`[records-service] listening on port ${PORT}`));
 }
 

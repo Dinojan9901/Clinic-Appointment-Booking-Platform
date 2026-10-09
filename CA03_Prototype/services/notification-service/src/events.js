@@ -10,28 +10,31 @@ const EXCHANGE = 'mediconnect.events';
 const QUEUE = 'notifications.appointment-booked';
 
 async function connectRabbit(url, name = 'notification-service') {
-  for (let attempt = 1; attempt <= 15; attempt++) {
+  while (true) {
+    let conn;
     try {
-      const conn = await amqp.connect(url);
+      conn = await amqp.connect(url);
       const channel = await conn.createChannel();
       await channel.assertExchange(EXCHANGE, 'topic', { durable: true });
       const q = await channel.assertQueue(QUEUE, { durable: true });
       await channel.bindQueue(q.queue, EXCHANGE, 'appointment.booked');
+      await channel.bindQueue(q.queue, EXCHANGE, 'appointment.cancelled');
+      await channel.prefetch(1);
 
       channel.consume(q.queue, async (msg) => {
         if (!msg) return;
         try {
           const evt = JSON.parse(msg.content.toString());
-          const message =
-            `Your appointment with ${evt.doctorName} at ${evt.clinicName} ` +
-            `is confirmed for ${evt.slot}. Please arrive 10 minutes early.`;
+          const cancelled = msg.fields.routingKey === 'appointment.cancelled';
+          const message = cancelled
+            ? `Your appointment with ${evt.doctorName} at ${evt.clinicName} on ${evt.slot} has been cancelled.`
+            : `Your appointment with ${evt.doctorName} at ${evt.clinicName} is confirmed for ${evt.slot}. Please arrive 10 minutes early.`;
 
-          await Notification.create({
-            userId: evt.patientId,
-            type: 'appointment',
-            message,
-            channel: 'email/sms',
-          });
+          await Notification.updateOne(
+            { eventId: evt.eventId },
+            { $setOnInsert: { eventId: evt.eventId, userId: evt.patientId, type: cancelled ? 'appointment-cancelled' : 'appointment', message, channel: 'email/sms' } },
+            { upsert: true }
+          );
 
           // Mock delivery.
           console.log(`[notification-service] (email/sms) -> patient ${evt.patientId}: ${message}`);
@@ -43,14 +46,17 @@ async function connectRabbit(url, name = 'notification-service') {
       });
 
       console.log(`[${name}] connected to RabbitMQ and consuming ${QUEUE}`);
-      conn.on('close', () => console.warn(`[${name}] RabbitMQ connection closed`));
-      return;
+      await new Promise((resolve) => {
+        conn.once('close', resolve);
+        conn.once('error', resolve);
+      });
+      console.warn(`[${name}] RabbitMQ connection closed; reconnecting`);
     } catch (err) {
-      console.log(`[${name}] RabbitMQ attempt ${attempt} failed (${err.message}); retrying in 3s`);
-      await new Promise((r) => setTimeout(r, 3000));
+      console.log(`[${name}] RabbitMQ unavailable (${err.message}); retrying in 3s`);
     }
+    try { await conn?.close(); } catch (_) { /* already closed */ }
+    await new Promise((r) => setTimeout(r, 3000));
   }
-  console.warn(`[${name}] could not connect to RabbitMQ; notifications will not be created`);
 }
 
 module.exports = { connectRabbit };

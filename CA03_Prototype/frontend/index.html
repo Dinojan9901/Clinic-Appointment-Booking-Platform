@@ -42,6 +42,9 @@
     .msg { padding:10px 12px; border-radius:6px; margin-bottom:12px; font-size:14px; }
     .msg.err { background:#fdecea; color:#c0392b; }
     .msg.ok { background:#e2f0d9; color:#2e7d32; }
+    .toast { position:fixed; z-index:1000; top:18px; right:18px; max-width:min(420px, calc(100vw - 36px)); padding:12px 16px; border-radius:7px; box-shadow:0 5px 20px #17263b33; font-size:14px; }
+    .toast.ok { background:#e2f0d9; color:#205d24; }
+    .toast.err { background:#fdecea; color:#9d251a; }
     h2 { color:var(--navy); }
     .title { text-align:center; margin-top:40px; }
     .title h1 { color:var(--navy); }
@@ -68,6 +71,17 @@
       const data = text ? JSON.parse(text) : {};
       if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
       return data;
+    }
+
+    function Toast({ message }) {
+      const [visible, setVisible] = useState(false);
+      useEffect(() => {
+        if (!message) return;
+        setVisible(true);
+        const timer = setTimeout(() => setVisible(false), 4500);
+        return () => clearTimeout(timer);
+      }, [message]);
+      return visible && message ? <div className={'toast ' + message.type} role="status">{message.text}</div> : null;
     }
 
     // ---------- Auth screen ----------
@@ -111,11 +125,6 @@
                 <div>
                   <label>Full name</label>
                   <input value={form.name} onChange={set('name')} required />
-                  <label>Register as</label>
-                  <select value={form.role} onChange={set('role')}>
-                    <option value="patient">Patient</option>
-                    <option value="doctor">Doctor</option>
-                  </select>
                 </div>
               )}
               <label>Email</label>
@@ -134,6 +143,7 @@
       const [filters, setFilters] = useState({ speciality: '', location: '' });
       const [doctors, setDoctors] = useState([]);
       const [msg, setMsg] = useState(null);
+      const [toast, setToast] = useState(null);
 
       async function search() {
         setMsg(null);
@@ -163,13 +173,15 @@
         setMsg(null);
         try {
           await api('/appointments', { method: 'POST', token, body: { doctorId, slot } });
-          setMsg({ type: 'ok', text: 'Appointment booked and payment completed. Check "My Appointments".' });
           search();
+          setMsg(null);
+          setToast({ type: 'ok', text: 'Appointment booked. Confirmation is on its way.' });
         } catch (e) { setMsg({ type: 'err', text: e.message }); }
       }
 
       return (
         <div className="card">
+          <Toast message={toast} />
           <h2>Find a Doctor</h2>
           {msg && <div className={'msg ' + (msg.type === 'ok' ? 'ok' : 'err')}>{msg.text}</div>}
           <div className="row">
@@ -208,6 +220,7 @@
     function MyAppointments({ token }) {
       const [items, setItems] = useState([]);
       const [msg, setMsg] = useState(null);
+      const [toast, setToast] = useState(null);
       async function load() {
         try { setItems(await api('/appointments/mine', { token })); }
         catch (e) { setMsg({ type: 'err', text: e.message }); }
@@ -215,11 +228,16 @@
       useEffect(() => { load(); }, []);
       async function cancel(id) {
         setMsg(null);
-        try { await api('/appointments/' + id + '/cancel', { method: 'POST', token }); load(); }
+        try {
+          await api('/appointments/' + id + '/cancel', { method: 'POST', token });
+          setToast({ type: 'ok', text: 'Appointment has been cancelled.' });
+          load();
+        }
         catch (e) { setMsg({ type: 'err', text: e.message }); }
       }
       return (
         <div className="card">
+          <Toast message={toast} />
           <h2>My Appointments</h2>
           {msg && <div className="msg err">{msg.text}</div>}
           {items.length === 0 && <p className="muted">No appointments yet.</p>}
@@ -329,7 +347,7 @@
                     <div><label>Medication</label><input onChange={(e) => setField(r._id, 'med', e.target.value)} /></div>
                     <div><label>Dosage</label><input placeholder="e.g. 1 tab twice daily" onChange={(e) => setField(r._id, 'dose', e.target.value)} /></div>
                   </div>
-                  <button onClick={() => save(r)}>Complete record</button>
+                  <button disabled={!String((edit[r._id]?.notes ?? r.notes) || '').trim()} onClick={() => save(r)}>Complete record</button>
                 </div>
               )}
             </div>

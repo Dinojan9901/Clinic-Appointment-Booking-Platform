@@ -32,7 +32,17 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const outboxEventSchema = new mongoose.Schema(
+  {
+    eventId: { type: String, required: true, unique: true },
+    routingKey: { type: String, required: true },
+    payload: { type: mongoose.Schema.Types.Mixed, required: true },
+  },
+  { timestamps: true }
+);
+
 const Doctor = mongoose.model('Doctor', doctorSchema);
 const Appointment = mongoose.model('Appointment', appointmentSchema);
+const OutboxEvent = mongoose.model('OutboxEvent', outboxEventSchema);
 
-module.exports = { Doctor, Appointment };
+module.exports = { Doctor, Appointment, OutboxEvent };

@@ -10,13 +10,13 @@ proposed in the CA01 report, so the demonstration can be tied directly back to t
 | Microservices architecture | 4 independent Express services, each its own process/container |
 | API Gateway as single entry point | `api-gateway/` – all client traffic routed through it |
 | Database-per-service | Each service uses its own MongoDB database (`auth_db`, `appointment_db`, `records_db`, `notification_db`) |
-| Event-driven backbone | RabbitMQ topic exchange `mediconnect.events`, event `appointment.booked` |
+| Event-driven backbone | MongoDB outbox + RabbitMQ topic exchange `mediconnect.events`, events `appointment.booked` and `appointment.cancelled` |
 | Layered organisation inside each service | `routes.js` (controller) → `controller.js` (business logic) → `model.js` (data access) |
 
 ## 2. CA01 diagram → prototype
 
 ### Context diagram
-- **Patient / Doctor / Administrator** → user roles created via the Auth Service.
+- **Patient / Doctor / Administrator** → patient self-registration and privileged accounts provisioned separately.
 - **Payment Provider** → simulated inside the Appointment Service (`paymentStatus = 'paid'`).
 - **Email/SMS Provider** → mocked by the Notification Service (logs the message).
 
@@ -59,7 +59,8 @@ events.js      -> Event Publisher / Consumer (RabbitMQ)
 
 ### Data flow diagram (search → book → pay)
 Implemented by `FindDoctor` (search) → `POST /appointments` (book + simulated pay) →
-`appointment.booked` event → Notification + Records consumers.
+`appointment.booked` event → Notification + Records consumers. Cancellation publishes
+`appointment.cancelled` through the same outbox and updates both services.
 
 ## 3. Quality attributes (as far as a prototype shows them)
 
@@ -69,5 +70,5 @@ Implemented by `FindDoctor` (search) → `POST /appointments` (book + simulated 
 | Availability / fault isolation | A service crashing does not take down the others; gateway returns 502 for that route only |
 | Security | JWT verification at the gateway, bcrypt hashing, role checks, rate limiting |
 | Maintainability | Clear service boundaries + layered structure; one language/toolchain |
-| Reliability | Durable RabbitMQ exchange/queues; connection retry logic; message ack/nack |
+| Reliability | MongoDB outbox; durable RabbitMQ exchange/queues; reconnect, publisher confirms, idempotent consumers, message ack/nack |
 | Performance | Gateway routing; MongoDB indexing on unique fields; lightweight JSON APIs |

@@ -31,6 +31,13 @@ const TARGETS = {
 const app = express();
 app.use(cors());
 app.use(morgan("dev"));
+app.use((req, _res, next) => {
+  // Strip identity claims supplied by clients before any proxy middleware sees them.
+  delete req.headers["x-user-id"];
+  delete req.headers["x-user-role"];
+  delete req.headers["x-user-name"];
+  next();
+});
 
 // Basic rate limiting (cross-cutting security concern).
 app.use(
@@ -117,6 +124,14 @@ app.use(
 
 // -------- Everything below requires a valid JWT --------
 app.use(authenticate);
+app.use((req, _res, next) => {
+  // The gateway is the only source of downstream identity headers. Populate
+  // the incoming request after JWT verification so every proxy method gets them.
+  req.headers["x-user-id"] = String(req.auth.sub);
+  req.headers["x-user-role"] = req.auth.role || "";
+  req.headers["x-user-name"] = encodeURIComponent(req.auth.name || "");
+  next();
+});
 
 app.use(
   "/api/doctors",

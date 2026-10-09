@@ -39,8 +39,9 @@ The prototype implements the CA01 architecture: an **API Gateway**, four indepen
 - **Synchronous** communication: Browser → Gateway → services (REST). Also
   Records Service → Appointment Service (validates the appointment when a doctor completes a
   record).
-- **Asynchronous** communication: Appointment Service **publishes** `appointment.booked`;
-  the Records and Notification services **consume** it independently (fan-out).
+- **Asynchronous** communication: Appointment Service stores `appointment.booked` and
+  `appointment.cancelled` in a MongoDB outbox, then publishes them to RabbitMQ; Records and
+  Notification consume the events independently (fan-out).
 
 See [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for a component-by-component
 mapping back to the CA01 diagrams.
@@ -98,11 +99,12 @@ Stop with `Ctrl+C`, then `docker compose down` (add `-v` to also wipe the databa
 3. **My Appointments** → the booking appears as `booked` + `paid`.
 4. **Notifications** → a confirmation appears (created asynchronously by the Notification
    Service from the event).
-5. **Register a doctor** in another browser/incognito → log in as doctor.
+5. Open another browser/incognito and **log in with a provisioned doctor account**.
 6. **Consultation Records** → the record for the booking is already there (auto-created by the
-   Records Service from the same event). Add notes + a prescription → **Complete record**.
-   - The Records Service makes a **synchronous REST call** to the Appointment Service to
-     validate the appointment before saving.
+   Records Service from the same event). Add consultation notes and an optional prescription →
+   **Complete record**.
+   - The Records Service asks the Appointment Service to complete the active appointment before
+     saving the record. If the Appointment Service is unavailable, the record remains pending.
 7. Back as the **patient → My Records** → the prescription is now visible.
 
 This one flow demonstrates: layered services, sync + async communication, database-per-service,
@@ -120,6 +122,7 @@ JWT security, and the full booking lifecycle.
 | POST | `/api/appointments` | JWT (patient) | Appointment |
 | GET  | `/api/appointments/mine` | JWT | Appointment |
 | POST | `/api/appointments/:id/cancel` | JWT (patient) | Appointment |
+| POST | `/api/appointments/:id/complete` | JWT (doctor) | Appointment |
 | GET  | `/api/appointments/doctor` | JWT (doctor) | Appointment |
 | GET  | `/api/records/mine` | JWT | Records |
 | GET  | `/api/records/doctor` | JWT (doctor) | Records |
@@ -147,9 +150,22 @@ JWT security, and the full booking lifecycle.
 ## 7. Notes & simplifications (prototype scope)
 
 - **Payment** is simulated (always succeeds) – a real gateway integration is out of scope.
-- The **doctor view** shows all appointments/records (patient-to-doctor identity linkage is
-  simplified for the demo).
+- The **doctor view** is scoped to the authenticated doctor's appointments and consultation
+  records. Public self-registration always creates a patient account; doctor accounts are
+  provisioned separately.
 - MongoDB is used for every service (one logical database each) to keep the stack simple;
   the CA01 design also lists PostgreSQL for transactional data.
 - Focus, per the module guidance, is on demonstrating the **architecture** rather than a
   production-grade implementation.
+
+## 8. Event recovery and record rules
+
+- A booking or cancellation is acknowledged only after its event is persisted in the
+  Appointment Service outbox. The publisher retries RabbitMQ connections and deletes an outbox
+  entry only after RabbitMQ confirms delivery.
+- The Records and Notification consumers reconnect after broker outages. Their writes are
+  idempotent, so redelivered events do not create duplicate records or notifications.
+- Cancellation returns the slot to availability and emits an event that cancels the pending
+  record and creates a patient notification.
+- A doctor must enter consultation notes before completing a record. Completion also marks the
+  appointment completed, preventing a later cancellation.

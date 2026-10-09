@@ -10,6 +10,7 @@ const appointments = express.Router();
 appointments.post('/', c.bookAppointment);
 appointments.get('/mine', c.myAppointments);
 appointments.get('/doctor', c.doctorAppointments);
+appointments.post('/:id/complete', c.completeAppointment);
 appointments.get('/:id', c.getAppointment);
 appointments.post('/:id/cancel', c.cancelAppointment);
 

@@ -28,7 +28,7 @@ app.use((err, _req, res, _next) => {
 
 async function start() {
   await connectDB(MONGO_URL, 'notification-service');
-  await connectRabbit(RABBIT_URL, 'notification-service');
+  connectRabbit(RABBIT_URL, 'notification-service');
   app.listen(PORT, () => console.log(`[notification-service] listening on port ${PORT}`));
 }
 

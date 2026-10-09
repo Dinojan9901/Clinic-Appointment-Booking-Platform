@@ -1,41 +1,51 @@
-/**
- * Messaging layer: publishes domain events to RabbitMQ.
- * This is the asynchronous, event-driven backbone from CA01. When an
- * appointment is booked, an "AppointmentBooked" event is published and
- * consumed independently by the Notification and Records services.
- */
+/** Durable outbox publisher. Pending events survive broker outages/restarts. */
 const amqp = require('amqplib');
+const { OutboxEvent } = require('./models');
 
 const EXCHANGE = 'mediconnect.events';
-let channel = null;
+const QUEUES = ['records.appointment-booked', 'notifications.appointment-booked'];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function connectRabbit(url, name = 'service') {
-  for (let attempt = 1; attempt <= 15; attempt++) {
+async function connectRabbit(url, name = 'appointment-service') {
+  // Keep retrying for the lifetime of the service, including after a broker
+  // restart. The HTTP API stays available while events accumulate in Mongo.
+  while (true) {
+    let connection;
     try {
-      const conn = await amqp.connect(url);
-      channel = await conn.createChannel();
+      connection = await amqp.connect(url);
+      const channel = await connection.createConfirmChannel();
       await channel.assertExchange(EXCHANGE, 'topic', { durable: true });
-      console.log(`[${name}] connected to RabbitMQ`);
-      conn.on('close', () => { channel = null; });
-      return;
+      for (const queue of QUEUES) {
+        const result = await channel.assertQueue(queue, { durable: true });
+        await channel.bindQueue(result.queue, EXCHANGE, 'appointment.booked');
+        await channel.bindQueue(result.queue, EXCHANGE, 'appointment.cancelled');
+      }
+      console.log(`[${name}] connected to RabbitMQ; draining outbox`);
+
+      let connected = true;
+      connection.on('close', () => { connected = false; console.warn(`[${name}] RabbitMQ connection closed`); });
+      while (connected) {
+        const event = await OutboxEvent.findOne({}).sort({ createdAt: 1 });
+        if (!event) {
+          await sleep(1000);
+          continue;
+        }
+        await new Promise((resolve, reject) => {
+          channel.publish(EXCHANGE, event.routingKey, Buffer.from(JSON.stringify(event.payload)), {
+            persistent: true,
+            contentType: 'application/json',
+            messageId: event.eventId,
+          }, (err) => err ? reject(err) : resolve());
+        });
+        await OutboxEvent.deleteOne({ _id: event._id });
+        console.log(`[${name}] delivered ${event.routingKey} ${event.eventId}`);
+      }
     } catch (err) {
-      console.log(`[${name}] RabbitMQ attempt ${attempt} failed (${err.message}); retrying in 3s`);
-      await new Promise((r) => setTimeout(r, 3000));
+      console.warn(`[${name}] RabbitMQ unavailable (${err.message}); retrying in 3s`);
     }
+    try { await connection?.close(); } catch (_) { /* already disconnected */ }
+    await sleep(3000);
   }
-  console.warn(`[${name}] could not connect to RabbitMQ; events will not be published`);
 }
 
-function publish(routingKey, message) {
-  if (!channel) {
-    console.warn('[events] no RabbitMQ channel; dropping event', routingKey);
-    return;
-  }
-  channel.publish(EXCHANGE, routingKey, Buffer.from(JSON.stringify(message)), {
-    persistent: true,
-    contentType: 'application/json',
-  });
-  console.log(`[events] published ${routingKey}`, message);
-}
-
-module.exports = { connectRabbit, publish, EXCHANGE };
+module.exports = { connectRabbit };

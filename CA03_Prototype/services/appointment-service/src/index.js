@@ -31,7 +31,7 @@ app.use((err, _req, res, _next) => {
 async function start() {
   await connectDB(MONGO_URL, 'appointment-service');
   await seedDoctors();
-  await connectRabbit(RABBIT_URL, 'appointment-service');
+  connectRabbit(RABBIT_URL, 'appointment-service');
   app.listen(PORT, () => console.log(`[appointment-service] listening on port ${PORT}`));
 }
 

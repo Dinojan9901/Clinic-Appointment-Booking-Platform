@@ -4,18 +4,19 @@ const jwt = require('jsonwebtoken');
 const User = require('./model');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'mediconnect_dev_secret';
-const ROLES = ['patient', 'doctor', 'admin'];
 
 async function register(req, res, next) {
   try {
-    const { name, email, password, role } = req.body || {};
+    const { name, email, password } = req.body || {};
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'name, email and password are required' });
     }
     if (password.length < 6) {
       return res.status(400).json({ error: 'password must be at least 6 characters' });
     }
-    const requestedRole = ROLES.includes(role) ? role : 'patient';
+    // Public self-registration must never grant privileged roles. Doctor and
+    // admin accounts are provisioned outside this endpoint.
+    const requestedRole = 'patient';
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
