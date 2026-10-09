@@ -17,7 +17,7 @@ services:
   mongodb:
     # MongoDB 5.0+ needs a CPU with AVX; 4.4 is the last version that runs
     # without it (this machine's CPU has no AVX). Fully compatible with the code.
-    image: mongo:4.4
+    image: mongo:7
     container_name: mc-mongodb
     # Not published to the host to avoid clashing with any local MongoDB or
     # another project's container on 27017. Services reach it over the internal
@@ -28,7 +28,7 @@ services:
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongo", "--quiet", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 6
