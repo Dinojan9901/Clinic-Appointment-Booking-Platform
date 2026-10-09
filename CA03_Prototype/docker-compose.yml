@@ -62,8 +62,6 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
     restart: unless-stopped
 
   records-service:
@@ -77,8 +75,6 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
     restart: unless-stopped
 
   notification-service:
@@ -90,8 +86,6 @@ services:
       RABBIT_URL: amqp://rabbitmq:5672
     depends_on:
       mongodb:
-        condition: service_healthy
-      rabbitmq:
         condition: service_healthy
     restart: unless-stopped
 
