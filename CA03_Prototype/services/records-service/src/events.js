@@ -19,13 +19,13 @@ const EXCHANGE = 'mediconnect.events';
 const QUEUE = 'records.appointment-events';
 
 const handlers = {
-  // Upsert keyed on the unique appointmentId -> duplicates are no-ops.
+  // Upsert keyed on the unique appointmentId. Refresh ownership/details too,
+  // which repairs records created by earlier versions missing doctorEmail.
   'appointment.booked': (evt) =>
     Record.updateOne(
       { appointmentId: evt.appointmentId },
       {
-        $setOnInsert: {
-          appointmentId: evt.appointmentId,
+        $set: {
           patientId: evt.patientId,
           patientName: evt.patientName,
           doctorId: evt.doctorId,
@@ -33,6 +33,9 @@ const handlers = {
           doctorEmail: evt.doctorEmail,
           clinicName: evt.clinicName,
           visitDate: evt.slot,
+        },
+        $setOnInsert: {
+          appointmentId: evt.appointmentId,
           status: 'pending',
         },
       },
@@ -52,8 +55,20 @@ async function connectRabbit(url, name = 'records-service') {
     attempt++;
     try {
       const conn = await amqp.connect(url);
-      const channel = await conn.createChannel();
+      const channel = await conn.createConfirmChannel();
       await channel.assertExchange(EXCHANGE, 'topic', { durable: true });
+      for (const key of Object.keys(handlers)) {
+        const retryQueue = `${QUEUE}.${key}.retry`;
+        await channel.assertQueue(retryQueue, {
+          durable: true,
+          arguments: {
+            'x-message-ttl': 5000,
+            'x-dead-letter-exchange': EXCHANGE,
+            'x-dead-letter-routing-key': key,
+          },
+        });
+        await channel.bindQueue(retryQueue, EXCHANGE, `${key}.retry`);
+      }
       const q = await channel.assertQueue(QUEUE, { durable: true });
       for (const key of Object.keys(handlers)) {
         await channel.bindQueue(q.queue, EXCHANGE, key);
@@ -69,8 +84,16 @@ async function connectRabbit(url, name = 'records-service') {
           channel.ack(msg);
         } catch (err) {
           console.error(`[records-service] failed to process ${key}:`, err.message);
-          // Retry once (e.g. a transient DB error); drop it if it fails again.
-          channel.nack(msg, false, !msg.fields.redelivered);
+          // Keep retrying transient failures; dropping a lifecycle event would
+          // permanently lose the consultation record or cancellation update.
+          channel.publish(EXCHANGE, `${key}.retry`, msg.content, {
+            persistent: true,
+            contentType: msg.properties.contentType,
+            messageId: msg.properties.messageId,
+            headers: msg.properties.headers,
+          });
+          await channel.waitForConfirms();
+          channel.ack(msg);
         }
       });
 

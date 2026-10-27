@@ -29,10 +29,11 @@ function eventPayload(appt) {
 // GET /doctors?speciality=&location=
 async function listDoctors(req, res, next) {
   try {
-    const { speciality, location } = req.query;
+    const speciality = typeof req.query.speciality === 'string' ? req.query.speciality.trim() : '';
+    const location = typeof req.query.location === 'string' ? req.query.location.trim() : '';
     const filter = {};
-    if (speciality) filter.speciality = new RegExp(speciality, 'i');
-    if (location) filter.location = new RegExp(location, 'i');
+    if (speciality) filter.speciality = new RegExp(speciality.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    if (location) filter.location = new RegExp(location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     const doctors = await Doctor.find(filter).sort({ rating: -1 });
     res.json(doctors);
   } catch (err) {
@@ -135,10 +136,8 @@ async function doctorAppointments(req, res, next) {
   try {
     const { role, email } = identity(req);
     if (role !== 'doctor') return res.status(403).json({ error: 'doctor role required' });
-    const appts = await Appointment.find({
-      doctorEmail: email,
-      status: { $ne: 'cancelled' },
-    }).sort({ slot: 1 });
+    if (!email) return res.status(403).json({ error: 'doctor email required' });
+    const appts = await Appointment.find({ doctorEmail: email, status: 'booked' }).sort({ slot: 1 });
     res.json(appts);
   } catch (err) {
     next(err);

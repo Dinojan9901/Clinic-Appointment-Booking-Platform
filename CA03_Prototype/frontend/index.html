@@ -42,6 +42,7 @@
     .msg { padding:10px 12px; border-radius:6px; margin-bottom:12px; font-size:14px; }
     .msg.err { background:#fdecea; color:#c0392b; }
     .msg.ok { background:#e2f0d9; color:#2e7d32; }
+    .toast { position:fixed; z-index:10; top:18px; right:18px; max-width:min(420px, calc(100vw - 36px)); box-shadow:0 5px 20px #10233a33; }
     h2 { color:var(--navy); }
     .title { text-align:center; margin-top:40px; }
     .title h1 { color:var(--navy); }
@@ -166,15 +167,16 @@
         setMsg(null);
         try {
           await api('/appointments', { method: 'POST', token, body: { doctorId, slot } });
+          await search();
           setMsg({ type: 'ok', text: 'Appointment booked and payment completed. Check "My Appointments".' });
-          search();
+          window.setTimeout(() => setMsg(null), 5000);
         } catch (e) { setMsg({ type: 'err', text: e.message }); }
       }
 
       return (
         <div className="card">
           <h2>Find a Doctor</h2>
-          {msg && <div className={'msg ' + (msg.type === 'ok' ? 'ok' : 'err')}>{msg.text}</div>}
+          {msg && <div role="status" className={'msg toast ' + (msg.type === 'ok' ? 'ok' : 'err')}>{msg.text}</div>}
           <div className="row">
             <div>
               <label>Speciality</label>
@@ -215,16 +217,20 @@
         try { setItems(await api('/appointments/mine', { token })); }
         catch (e) { setMsg({ type: 'err', text: e.message }); }
       }
-      useEffect(() => { load(); }, []);
+      useEffect(() => { load(); const timer = window.setInterval(load, 5000); return () => window.clearInterval(timer); }, [token]);
       async function cancel(id) {
         setMsg(null);
-        try { await api('/appointments/' + id + '/cancel', { method: 'POST', token }); load(); }
+        try {
+          await api('/appointments/' + id + '/cancel', { method: 'POST', token });
+          setMsg({ type: 'ok', text: 'Appointment has been cancelled.' });
+          load(); window.setTimeout(() => setMsg(null), 5000);
+        }
         catch (e) { setMsg({ type: 'err', text: e.message }); }
       }
       return (
         <div className="card">
           <h2>My Appointments</h2>
-          {msg && <div className="msg err">{msg.text}</div>}
+          {msg && <div role="status" className={'msg toast ' + (msg.type === 'ok' ? 'ok' : 'err')}>{msg.text}</div>}
           {items.length === 0 && <p className="muted">No appointments yet.</p>}
           {items.map((a) => (
             <div className="doctor" key={a._id}>
@@ -246,7 +252,12 @@
     // ---------- Patient: my records / prescriptions ----------
     function MyRecords({ token }) {
       const [items, setItems] = useState([]);
-      useEffect(() => { api('/records/mine', { token }).then(setItems).catch(() => {}); }, []);
+      useEffect(() => {
+        let active = true;
+        const load = () => api('/records/mine', { token }).then((data) => { if (active) setItems(data); }).catch(() => {});
+        load(); const timer = window.setInterval(load, 5000);
+        return () => { active = false; window.clearInterval(timer); };
+      }, [token]);
       return (
         <div className="card">
           <h2>My Consultation Records</h2>
@@ -270,7 +281,12 @@
     // ---------- Patient: notifications ----------
     function Notifications({ token }) {
       const [items, setItems] = useState([]);
-      useEffect(() => { api('/notifications/mine', { token }).then(setItems).catch(() => {}); }, []);
+      useEffect(() => {
+        let active = true;
+        const load = () => api('/notifications/mine', { token }).then((data) => { if (active) setItems(data); }).catch(() => {});
+        load(); const timer = window.setInterval(load, 5000);
+        return () => { active = false; window.clearInterval(timer); };
+      }, [token]);
       return (
         <div className="card">
           <h2>Notifications</h2>
@@ -294,7 +310,7 @@
       const [edit, setEdit] = useState({});
       const [msg, setMsg] = useState(null);
       async function load() { try { setItems(await api('/records/doctor', { token })); } catch (e) { setMsg({ type:'err', text:e.message }); } }
-      useEffect(() => { load(); }, []);
+      useEffect(() => { load(); const timer = window.setInterval(load, 5000); return () => window.clearInterval(timer); }, [token]);
 
       function setField(id, field, value) {
         setEdit({ ...edit, [id]: { ...(edit[id] || {}), [field]: value } });
@@ -302,9 +318,14 @@
       async function save(r) {
         setMsg(null);
         const e = edit[r._id] || {};
+        const notes = e.notes ?? r.notes;
+        if (!notes || !notes.trim()) {
+          setMsg({ type: 'err', text: 'Enter consultation notes before completing this record.' });
+          return;
+        }
         const prescription = (e.med ? [{ medication: e.med, dosage: e.dose || '' }] : r.prescription) || [];
         try {
-          await api('/records/' + r._id, { method: 'PUT', token, body: { notes: e.notes ?? r.notes, prescription } });
+          await api('/records/' + r._id, { method: 'PUT', token, body: { notes, prescription } });
           setMsg({ type: 'ok', text: 'Record completed and saved.' });
           load();
         } catch (err) { setMsg({ type: 'err', text: err.message }); }

@@ -22,6 +22,15 @@ const RELAY_INTERVAL_MS = 2000;
 let channel = null;
 let flushing = false;
 let flushAgain = false;
+let reconnectTimer = null;
+
+function scheduleReconnect(url, name) {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectRabbit(url, name);
+  }, 3000);
+}
 
 async function connectRabbit(url, name = 'service') {
   let attempt = 0;
@@ -35,9 +44,13 @@ async function connectRabbit(url, name = 'service') {
       conn.on('close', () => {
         channel = null;
         console.warn(`[${name}] RabbitMQ connection closed; reconnecting...`);
-        setTimeout(() => connectRabbit(url, name), 3000);
+        scheduleReconnect(url, name);
       });
-      conn.on('error', () => {}); // handled by close
+      conn.on('error', (err) => {
+        channel = null;
+        console.warn(`[${name}] RabbitMQ connection error: ${err.message}`);
+        scheduleReconnect(url, name);
+      });
       flushOutbox(); // deliver anything that queued up while disconnected
       return;
     } catch (err) {

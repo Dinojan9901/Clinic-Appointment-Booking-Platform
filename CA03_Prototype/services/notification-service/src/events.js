@@ -35,8 +35,20 @@ async function connectRabbit(url, name = 'notification-service') {
     attempt++;
     try {
       const conn = await amqp.connect(url);
-      const channel = await conn.createChannel();
+      const channel = await conn.createConfirmChannel();
       await channel.assertExchange(EXCHANGE, 'topic', { durable: true });
+      for (const key of Object.keys(MESSAGES)) {
+        const retryQueue = `${QUEUE}.${key}.retry`;
+        await channel.assertQueue(retryQueue, {
+          durable: true,
+          arguments: {
+            'x-message-ttl': 5000,
+            'x-dead-letter-exchange': EXCHANGE,
+            'x-dead-letter-routing-key': key,
+          },
+        });
+        await channel.bindQueue(retryQueue, EXCHANGE, `${key}.retry`);
+      }
       const q = await channel.assertQueue(QUEUE, { durable: true });
       for (const key of Object.keys(MESSAGES)) {
         await channel.bindQueue(q.queue, EXCHANGE, key);
@@ -67,8 +79,16 @@ async function connectRabbit(url, name = 'notification-service') {
             return channel.ack(msg);
           }
           console.error(`[notification-service] failed to process ${key}:`, err.message);
-          // Retry once (e.g. a transient DB error); drop it if it fails again.
-          channel.nack(msg, false, !msg.fields.redelivered);
+          // Keep retrying transient failures so a temporary DB issue cannot
+          // permanently lose a confirmation or cancellation notice.
+          channel.publish(EXCHANGE, `${key}.retry`, msg.content, {
+            persistent: true,
+            contentType: msg.properties.contentType,
+            messageId: msg.properties.messageId,
+            headers: msg.properties.headers,
+          });
+          await channel.waitForConfirms();
+          channel.ack(msg);
         }
       });
 

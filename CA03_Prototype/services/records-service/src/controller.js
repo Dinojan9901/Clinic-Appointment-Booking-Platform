@@ -29,7 +29,8 @@ async function doctorRecords(req, res, next) {
   try {
     const { role, email } = identity(req);
     if (role !== 'doctor') return res.status(403).json({ error: 'doctor role required' });
-    const records = await Record.find({ doctorEmail: email }).sort({ status: 1, createdAt: -1 });
+    if (!email) return res.status(403).json({ error: 'doctor email required' });
+    const records = await Record.find({ doctorEmail: email, status: { $ne: 'cancelled' } }).sort({ status: 1, createdAt: -1 });
     res.json(records);
   } catch (err) {
     next(err);
@@ -50,6 +51,12 @@ async function completeRecord(req, res, next) {
     }
     if (record.status === 'cancelled') {
       return res.status(409).json({ error: 'appointment was cancelled' });
+    }
+
+    const { notes, prescription } = req.body || {};
+    const cleanedNotes = typeof notes === 'string' ? notes.trim() : '';
+    if (!cleanedNotes) {
+      return res.status(400).json({ error: 'consultation notes are required before completing a record' });
     }
 
     // --- Synchronous inter-service call (REST) ---
@@ -94,8 +101,7 @@ async function completeRecord(req, res, next) {
       return res.status(502).json({ error: `appointment verification failed (${resp.status})` });
     }
 
-    const { notes, prescription } = req.body || {};
-    if (notes !== undefined) record.notes = notes;
+    record.notes = cleanedNotes;
     if (Array.isArray(prescription)) {
       record.prescription = prescription
         .filter((p) => p && p.medication)
