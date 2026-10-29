@@ -1,0 +1,54 @@
+name: CA03 prototype CI
+
+on:
+  push:
+    paths: ["CA03_Prototype/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["CA03_Prototype/**", ".github/workflows/ci.yml"]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: CA03_Prototype
+
+jobs:
+  checks:
+    name: Syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: node --check every backend file
+        run: |
+          find common api-gateway/src services tests -name '*.js' -not -path '*/node_modules/*' -print0 \
+            | xargs -0 -n1 node --check
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+
+  e2e:
+    name: Build, deploy and end-to-end test
+    needs: checks
+    runs-on: ubuntu-latest
+    env:
+      HOLD_MINUTES: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build images
+        run: docker compose build
+      - name: Start the stack (appointment-service scaled to 2 replicas)
+        run: docker compose up -d --scale appointment-service=2
+      - name: Wait until every service is healthy
+        run: node tests/wait-ready.js
+      - name: End-to-end tests
+        run: EXPIRY_TEST=1 node tests/e2e.js
+      - name: Service logs
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

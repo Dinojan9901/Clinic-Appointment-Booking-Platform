@@ -1,0 +1,55 @@
+:root { --navy:#14345f; --steel:#3465a4; --bg:#f4f6fa; --line:#dfe4ec; --ok:#2e7d32; --okbg:#e2f0d9; --err:#c0392b; --errbg:#fdecea; --warn:#b26a00; --warnbg:#fff4e0; --muted:#6b7688; }
+* { box-sizing: border-box; }
+body { margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2733; }
+header { background:var(--navy); color:#fff; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+header h1 { font-size:20px; margin:0; }
+header .who { font-size:14px; display:flex; align-items:center; gap:10px; }
+.container { max-width:1040px; margin:20px auto; padding:0 16px; }
+.card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:18px; margin-bottom:16px; }
+.nav { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+.nav button { background:#fff; border:1px solid var(--line); color:var(--steel); }
+.nav button.active { background:var(--steel); color:#fff; border-color:var(--steel); }
+button { cursor:pointer; border:none; background:var(--steel); color:#fff; padding:8px 14px; border-radius:6px; font-size:14px; font-family:inherit; }
+button.secondary { background:#eef1f6; color:var(--navy); }
+button.danger { background:var(--err); }
+button.ok { background:var(--ok); }
+button.small { padding:4px 10px; font-size:13px; }
+button:disabled { opacity:.6; cursor:not-allowed; }
+input, select, textarea { width:100%; padding:8px 10px; margin:6px 0 12px; border:1px solid var(--line); border-radius:6px; font-size:14px; font-family:inherit; background:#fff; }
+label { font-size:13px; font-weight:600; color:#41506a; }
+.row { display:flex; gap:12px; flex-wrap:wrap; }
+.row > div { flex:1; min-width:150px; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.item { border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:10px; }
+.item h3 { margin:0 0 4px; color:var(--navy); font-size:17px; }
+.muted { color:var(--muted); font-size:13px; }
+.slot { margin:4px 6px 4px 0; }
+.day { margin-top:6px; }
+.badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:12px; font-weight:600; background:#eef1f6; color:var(--navy); }
+.badge.booked, .badge.completed, .badge.paid, .badge.succeeded, .badge.active, .badge.approved, .badge.up, .badge.valid { background:var(--okbg); color:var(--ok); }
+.badge.cancelled, .badge.expired, .badge.failed, .badge.rejected, .badge.suspended, .badge.down, .badge.disabled, .badge.invalid { background:var(--errbg); color:var(--err); }
+.badge.pending, .badge.pending_payment, .badge.refunded, .badge.processing { background:var(--warnbg); color:var(--warn); }
+.msg { padding:10px 12px; border-radius:6px; margin-bottom:12px; font-size:14px; }
+.msg.err { background:var(--errbg); color:var(--err); }
+.msg.ok { background:var(--okbg); color:var(--ok); }
+.msg.info { background:#e8f0fb; color:var(--navy); }
+.toasts { position:fixed; z-index:50; top:16px; right:16px; display:flex; flex-direction:column; gap:8px; max-width:min(420px, calc(100vw - 32px)); }
+.toasts .msg { box-shadow:0 5px 20px #10233a33; margin:0; }
+h2 { color:var(--navy); margin-top:0; }
+.title { text-align:center; margin-top:40px; }
+.title h1 { color:var(--navy); }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+.table-wrap { overflow-x:auto; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px; margin-bottom:16px; }
+.tile { background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; }
+.tile .v { font-size:22px; font-weight:700; color:var(--navy); }
+.tile .k { font-size:12px; color:var(--muted); }
+.modal-back { position:fixed; inset:0; background:#0f1d3366; display:flex; align-items:flex-start; justify-content:center; padding:40px 16px; z-index:40; overflow-y:auto; }
+.modal { background:#fff; border-radius:10px; padding:20px; width:100%; max-width:480px; }
+.modal h2 { margin-bottom:6px; }
+.stars button { background:none; color:#c9cfdb; font-size:26px; padding:0 2px; }
+.stars button.on { color:#f5a623; }
+.dot { display:inline-block; min-width:18px; padding:0 5px; border-radius:9px; background:var(--err); color:#fff; font-size:11px; text-align:center; }
+code { background:#eef1f6; padding:1px 5px; border-radius:4px; font-size:12px; }
+@media (max-width: 600px) { header h1 { font-size:18px; } .card { padding:14px; } }

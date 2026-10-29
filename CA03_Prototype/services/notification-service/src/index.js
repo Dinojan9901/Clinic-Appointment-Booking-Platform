@@ -1,38 +1,28 @@
 /**
  * MediConnect - Notification Service (bootstrap)
- * Consumes "appointment.booked" / "appointment.cancelled" events and stores
- * the matching patient notifications.
+ * Consumes appointment, payment, record and doctor events; stores in-app
+ * notifications, sends emails (SMTP/Mailpit) and schedules reminders.
  */
-const express = require('express');
-const cors = require('cors');
-const morgan = require('morgan');
-const connectDB = require('./db');
-const { connectRabbit } = require('./events');
+const { createApp, finish, connectDB } = require('../common/service');
+const { EventBus } = require('../common/messaging');
+const { registerEvents } = require('./events');
 const routes = require('./routes');
 
+const NAME = 'notification-service';
 const PORT = process.env.PORT || 4004;
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/notification_db';
 const RABBIT_URL = process.env.RABBIT_URL || 'amqp://localhost:5672';
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(morgan('dev'));
-
-app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'notification-service' }));
+const app = createApp(NAME);
 app.use('/notifications', routes);
-
-app.use((err, _req, res, _next) => {
-  console.error('[notification-service] error:', err.message);
-  res.status(500).json({ error: 'internal server error' });
-});
+finish(app, NAME);
 
 async function start() {
-  await connectDB(MONGO_URL, 'notification-service');
-  // Serve HTTP immediately; connect + consume from RabbitMQ in the background
-  // (retries until available).
-  app.listen(PORT, () => console.log(`[notification-service] listening on port ${PORT}`));
-  connectRabbit(RABBIT_URL, 'notification-service');
+  await connectDB(MONGO_URL, NAME);
+  app.listen(PORT, () => console.log(`[${NAME}] listening on port ${PORT}`));
+  const bus = new EventBus(RABBIT_URL, NAME);
+  registerEvents(bus);
+  bus.start();
 }
 
 start();

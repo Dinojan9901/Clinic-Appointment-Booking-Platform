@@ -1,185 +1,195 @@
-# MediConnect CA03 – Testing Guide
+# MediConnect CA03 v2 – Testing Guide
 
-Please run the prototype on your machine and go through the checks below to confirm
-everything works before we demo.
+The prototype now implements the remaining CA01 functional requirements. Please run it and go
+through the checks below before the evaluation. The code is on the branch **`dev/final`**.
 
-The changes are on **`main`**. They fix the weak points examiners are
-likely to ask about in Q&A. In short:
+## What's new
 
-- Identity headers can no longer be spoofed through the gateway.
-- Events are no longer lost when RabbitMQ is down (transactional outbox).
-- Two people can no longer book the same slot.
-- Cancelling an appointment now notifies the other services.
-- Doctors can't self-register, and each doctor only sees their own patients.
-- Completing a record marks the appointment *completed*, so it can't be cancelled afterwards.
-- If the Appointment Service is down, completing a record is refused instead of silently
-  skipping the check.
+- **Payment Service** (from the CA01 architecture diagram) with its own database. Booking works
+  as a **Saga**: the slot is *held* → the patient pays with a test card → the booking is
+  confirmed. Unpaid holds expire, and cancelling a paid booking triggers a **refund**. Payments
+  are simulated, so no money moves.
+- **Admin portal:**
+  - verify doctor sign-ups
+  - manage users and clinics
+  - view all payments
+  - an activity/audit log built from every event
+  - live health of all services
+- **Doctor onboarding:** doctors register themselves and can only log in after an admin
+  approves their licence.
+- **Patients** can **reschedule**, **rate & review** doctors after a visit, and download PDF
+  **receipts**. They also get **reminders**.
+- **Prescriptions** are **digitally signed** (Ed25519) and downloadable as a PDF with a QR code.
+  A public page lets a pharmacy verify the signature.
+- **Doctors** manage their own slots and can see a patient's **history**. Every history view is
+  audited.
+- **Infrastructure:**
+  - **Redis** caches doctor search.
+  - **Mailpit** is a local inbox where you can read every email the system sends.
+  - Services can be **scaled** (`--scale`).
+  - **GitHub Actions CI** builds and tests everything on every push.
+- **Fixed:** the retry-queue bug from the last review. A failing message no longer duplicates
+  or loops; it goes to a dead-letter queue after 5 attempts.
 
-The full explanation is in section 8 of `CA03_Prototype/README.md` ("Key design decisions").
-**Please read it before the presentation**, because it doubles as our Q&A prep.
+Read sections 7 and 8 of `CA03_Prototype/README.md` before the presentation. They explain the
+design decisions and are our Q&A prep.
 
-**Time needed:** about 30–40 minutes, including the first build.
+**Time needed:** about 45 minutes. The first build takes 5–10 minutes.
 
 ---
 
-## 1. Prerequisites
-
-- **Docker Desktop**, running. Check with `docker info`.
-- **Git**.
-- **Internet access** the first time the page loads, because the React UI loads from a CDN.
-- These ports must be free: **3000** (web app), **8090** (gateway), **15672** (RabbitMQ UI).
-
-## 2. Get the code
-
-If you haven't cloned the repo yet:
+## 1. Setup
 
 ```bash
-git clone https://github.com/Dinojan9901/Clinic-Appointment-Booking-Platform.git
-cd Clinic-Appointment-Booking-Platform
-```
-
-If you already have it, get the latest `main` (if your `origin` is your own fork, pull from
-Dinojan's repo as shown):
-
-```bash
-git checkout main
-git pull https://github.com/Dinojan9901/Clinic-Appointment-Booking-Platform.git main
-```
-
-## 3. Start the stack (clean)
-
-```bash
+git fetch origin
+git checkout dev/final
+git pull origin dev/final
 cd CA03_Prototype
-docker compose down -v          # wipes old data – important, old data won't show for doctors
+docker compose down -v          # REQUIRED: the database layout changed
 docker compose up --build -d
-docker compose ps               # repeat until mongodb + rabbitmq say "(healthy)"
+node tests/wait-ready.js        # optional (needs Node 18+): waits until everything is healthy
 ```
 
-- The first build takes a few minutes.
-- RabbitMQ can take **1–3 minutes** to become healthy, and the services start after it.
-- To check readiness, run `docker compose logs appointment-service records-service notification-service`.
-  You should see `listening on port ...` and `consuming ...appointment-events`.
+If you don't have Node, wait until `docker compose ps` shows `mongodb`, `rabbitmq` and `redis`
+as **healthy**, then give it another minute.
 
-Then open:
+| Open | What |
+|------|------|
+| http://localhost:3000 | Web app |
+| http://localhost:8025 | **Mailpit**: every email the system sends |
+| http://localhost:15672 | RabbitMQ UI (`guest` / `guest`) |
 
-- **Web app:** http://localhost:3000
-- **RabbitMQ UI:** http://localhost:15672 (`guest` / `guest`). Under *Queues* you should see
-  `records.appointment-events` and `notifications.appointment-events`.
+**Accounts:**
 
-## 4. Accounts
+| Role | Login |
+|------|-------|
+| Admin | `admin@mediconnect.lk` / `admin123` |
+| Doctors (password `doctor123`) | `anushka.perera@mediconnect.lk`, `suresh.kumar@mediconnect.lk`, `fathima.nazeer@mediconnect.lk`, `rajitha.silva@mediconnect.lk` |
+| Patients | register in the UI |
 
-**Patients:** register in the UI with any email. Password must be at least 6 characters.
+**Tip:** use a separate browser or incognito window for each role. Logins are stored in the
+browser, so two roles in the same window would overwrite each other.
 
-**Doctors** (seeded – doctors can't self-register any more). The password for all of them is
-**`doctor123`**:
+**Test cards** (shown in the checkout):
 
-| Doctor | Email | Speciality / City |
-|--------|-------|-------------------|
-| Dr. Anushka Perera | `anushka.perera@mediconnect.lk` | Cardiology, Colombo |
-| Dr. Suresh Kumar | `suresh.kumar@mediconnect.lk` | Dermatology, Jaffna |
-| Dr. Fathima Nazeer | `fathima.nazeer@mediconnect.lk` | Pediatrics, Kandy |
-| Dr. Rajitha Silva | `rajitha.silva@mediconnect.lk` | Cardiology, Kandy |
-
-**Tip:** use a normal window for the patient and an **incognito window** for the doctor. Both
-sessions are stored in the browser, so one window can't be logged in as both.
+| Card number | Result |
+|-------------|--------|
+| `4242 4242 4242 4242` | approved |
+| `4000 0000 0000 0002` | declined |
+| `4000 0000 0000 9995` | insufficient funds |
 
 ---
 
-## 5. Test checklist
+## 2. Quick automated check (5 minutes, needs Node 18+)
 
-Tick each one, and note anything that doesn't match the **Expected** column.
+```bash
+node tests/e2e.js
+```
 
-### A. Main flow
+It runs about 70 checks through the gateway and should end with **`… passed, 0 failed`**.
+Please paste the last lines into the group. Then do the manual checks below, because they test
+the UI.
 
-| # | Do this | Expected |
-|---|---------|----------|
-| A1 | Open **Register**. | There is **no "Register as doctor"** option. New accounts are patients. |
-| A2 | Register patient **P1** and log in. | The *Find a Doctor* tab opens with 4 doctors. |
-| A3 | Book a slot with **Dr. Anushka Perera**. | Green "Appointment booked..." message. The slot disappears from the list. |
-| A4 | Open **My Appointments**. | The booking shows `booked` and `paid`, with a **Cancel** button. |
-| A5 | Open **Notifications**. You may need to switch tabs to refresh. | A "confirmed" message appears within a few seconds. |
-| A6 | In incognito, log in as **Anushka**. | *Appointments* shows P1's booking. *Consultation Records* shows a `pending` record. |
-| A7 | In incognito, log in as **Suresh** instead. | P1's appointment and record are **not** visible. Doctors only see their own patients. |
-| A8 | As **Anushka**, add notes and a medication, then click **Complete record**. | "Record completed and saved." |
-| A9 | As **P1**, open **My Records**. | The notes and prescription are visible. |
-| A10 | As **P1**, open **My Appointments**. | The appointment shows `completed`, and there is **no Cancel button**. |
+---
 
-### B. Cancellation
+## 3. Manual checklist
+
+### A. Booking and payment (patient)
 
 | # | Do this | Expected |
 |---|---------|----------|
-| B1 | As P1, book another Anushka slot, then **Cancel** it. | The status becomes `cancelled`. |
-| B2 | Open **Find a Doctor**. | The cancelled slot is **available again**. |
-| B3 | Open **Notifications**. | A "has been cancelled" message appears. |
-| B4 | As Anushka, open **Consultation Records**. | That record shows `cancelled`: "The patient cancelled this appointment." There is no form. |
+| A1 | Register a patient, open **Find a Doctor**, and filter by **Clinic**. | The list filters. Slots are grouped by day for the next 5 days. |
+| A2 | Click a slot. | A toast says the slot is held. **Checkout** opens with a countdown. |
+| A3 | Click **declined**, then **Pay**. | Red "payment declined". The checkout stays open. |
+| A4 | Click **approved**, then **Pay**. | "Payment approved… Confirming" turns into **"Your appointment is confirmed"** within a few seconds. |
+| A5 | Open **My Appointments**. | `booked` and `paid` with a receipt number, plus **Reschedule** and **Cancel** buttons. |
+| A6 | Open **Payments** and click **Receipt**. | A PDF receipt downloads. |
+| A7 | Open **Notifications**, and **Mailpit**. | Hold, declined and confirmed messages appear in both places. A red unread counter shows on the tab. |
+| A8 | Book another slot and click **Pay later**. In My Appointments, use **Pay now**. | The countdown shows, and Pay now opens the checkout. |
 
-### C. Double booking
+### B. Doctor
 
 | # | Do this | Expected |
 |---|---------|----------|
-| C1 | Register patient **P2** in another browser and open *Find a Doctor*. Don't refresh. | — |
-| C2 | As **P1**, book a slot with Dr. Rajitha Silva. Then, as **P2**, click the **same slot** on the stale page. | P2 gets **"selected slot is no longer available"**. Only one booking exists. |
+| B1 | Log in as the doctor you booked with. | **Appointments** shows the paid booking. Unpaid holds are not shown. |
+| B2 | Open **Consultation Records**, add notes and **2 medications**, then **Complete & sign**. | "Record completed and prescription digitally signed". The badge shows `completed`. |
+| B3 | Click **Patient history**. | A modal lists the patient's completed visits. |
+| B4 | Open **My Schedule**, publish a slot, then click a slot to withdraw it. | The slot appears in patient search immediately, then disappears again. |
+| B5 | Log in as a *different* doctor. | Patients of the first doctor are **not** visible. |
 
-### D. Security checks (PowerShell)
+### C. Prescription and after the visit (patient)
 
-Run these in PowerShell while the stack is up.
+| # | Do this | Expected |
+|---|---------|----------|
+| C1 | Open **My Records** and click **Download prescription (PDF)**. | A PDF with the medications, a QR code and the signature. |
+| C2 | Click **Verify RX-…**, or scan the QR code. | A green **"Valid prescription – digital signature verified"**. No login is needed. |
+| C3 | In **My Appointments**, click **Rate your visit**, give 4 stars and submit. | "Thanks for your feedback". The doctor's rating updates in Find a Doctor. |
+| C4 | Reschedule a booked appointment. | The slot changes, the old slot becomes free, and the doctor's record shows the new date. |
+| C5 | Cancel a **paid** appointment. | A "refund is being processed" toast. **Payments** shows `refunded`, and a refund email arrives. |
+| C6 | Try to cancel a **completed** visit. | No Cancel button (the API refuses it). |
+
+### D. Doctor onboarding and admin
+
+| # | Do this | Expected |
+|---|---------|----------|
+| D1 | Use **Join as doctor**: fill in licence, speciality, clinic and fee. | "Registration received…". Mailpit shows the email. |
+| D2 | Try to log in as that doctor. | "awaiting admin verification". |
+| D3 | As admin, open **Doctor Verification** and click **Verify & approve**. | The doctor can now log in. After publishing slots, they appear in patient search. |
+| D4 | As admin, open **Users** and **Disable** a doctor. | The doctor can't log in and disappears from patient search. **Enable** restores both. |
+| D5 | As admin, open **Clinics** and add a clinic. | It appears in the clinic filter and in the doctor sign-up form. |
+| D6 | Check the admin **Dashboard**, **Payments** and **Activity Log**. | Stats, all services `up`, payment totals, and a feed of events, including `ehr.accessed`. |
+
+### E. Resilience and architecture demos (good for the presentation)
+
+| # | Do this | Expected |
+|---|---------|----------|
+| E1 | Run `docker compose stop rabbitmq`, then book **and pay**. | Both still succeed. The booking stays `pending payment` because the event is waiting in the outbox. |
+| E2 | Run `docker compose start rabbitmq` and wait 1–3 minutes. | The booking becomes **booked**, and the notification and email arrive. Nothing was lost. |
+| E3 | Run `docker compose down`, then start with a 1-minute hold: `HOLD_MINUTES=1 docker compose up -d` (in PowerShell: `$env:HOLD_MINUTES=1; docker compose up -d`). Book a slot and don't pay. | After about 1–1.5 minutes the booking shows `expired`, the slot is free again, and the patient is notified. |
+| E4 | Run `docker compose stop appointment-service`. As a doctor, click **Complete & sign**. | "cannot verify the appointment right now (Appointment Service unavailable)". Then `docker compose start appointment-service`. |
+| E5 | Run `docker compose up -d --scale appointment-service=3`. | The admin Dashboard's health table shows a changing **Instance** ID. In the browser DevTools Network tab, the `X-Served-By` header changes between requests. |
+| E6 | Search the same doctors twice. | The second response has the header `X-Cache: HIT` (the Redis cache). |
+
+### F. Security (PowerShell)
 
 ```powershell
-# D1 – trying to register as a doctor still creates a PATIENT (look for: role : patient)
+# F1 - trying to register as admin still creates a PATIENT (look for: role : patient)
 Invoke-RestMethod -Method Post -Uri http://localhost:8090/api/auth/register -ContentType 'application/json' `
-  -Body '{"name":"Hacker","email":"hacker1@test.lk","password":"secret1","role":"doctor"}'
+  -Body '{"name":"Hacker","email":"hacker2@test.lk","password":"secret1","role":"admin"}'
 
-# D2 – a forged identity header without a token is rejected (look for: 401 Unauthorized)
-Invoke-WebRequest -Uri http://localhost:8090/api/auth/me -Headers @{ 'x-user-id' = 'someone-else' }
+# F2 - a forged identity header without a token is rejected (look for: 401)
+Invoke-WebRequest -Uri http://localhost:8090/api/auth/me -Headers @{ 'x-user-id' = 'x'; 'x-user-role' = 'admin' }
 ```
-
-On macOS or Linux, use these instead:
-`curl -X POST localhost:8090/api/auth/register -H 'Content-Type: application/json' -d '{"name":"Hacker","email":"hacker1@test.lk","password":"secret1","role":"doctor"}'`
-and `curl -i localhost:8090/api/auth/me -H 'x-user-id: someone-else'`.
-
-### E. Resilience (our best demo moments – please try these)
-
-Run the commands from inside `CA03_Prototype/`.
-
-| # | Do this | Expected |
-|---|---------|----------|
-| E1 | `docker compose stop rabbitmq`, then book an appointment as a patient. | Booking **still succeeds**. No notification yet: the event is waiting in the outbox. |
-| E2 | `docker compose start rabbitmq`, then wait 1–3 minutes. | The confirmation **appears by itself**, and the doctor's record appears too. Nothing was lost. |
-| E3 | Book an appointment and wait until the doctor sees the pending record. Then run `docker compose stop appointment-service`. As the doctor, click **Complete record**. | An error says *"cannot verify the appointment right now (Appointment Service unavailable)"*. The record stays `pending`. |
-| E4 | `docker compose start appointment-service`, wait about 20 seconds, then click **Complete record** again. | It succeeds. |
 
 ---
 
-## 6. Troubleshooting
+## 4. Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
-| A port is already in use (3000, 8090 or 15672) | In `docker-compose.yml`, change the **left** number of that `ports:` entry, e.g. `"3001:80"`. |
-| Blank white page | The page needs internet to load React from unpkg. Hard-refresh with Ctrl+F5. |
-| *"Upstream service unavailable"* | That service is still starting. Check `docker compose ps` and `docker compose logs <service>`. |
-| Doctors see nothing / old bookings look odd | Run `docker compose down -v` and then `docker compose up --build -d` for clean data. |
-| RabbitMQ never becomes healthy | Run `docker compose logs rabbitmq` and send me the last ~30 lines. |
-| Notifications don't appear | Check `docker compose logs notification-service`. It should say `consuming notifications.appointment-events`. |
+| Strange old data, login problems, or MongoDB index errors | Run `docker compose down -v` and then `docker compose up --build -d`. The database layout changed. |
+| A port is already in use (3000, 8090, 8025, 15672) | Change the **left** number in that `ports:` entry in `docker-compose.yml`. |
+| Booking stays "confirming" or no emails arrive | RabbitMQ is still starting. Check `docker compose ps` and wait for `rabbitmq` to be **healthy**. |
+| Blank page | The UI loads React from a CDN, so it needs internet. Hard-refresh with Ctrl+F5. |
+| *"Upstream service unavailable"* | That service is still starting. Run `docker compose logs <service>`. |
 
-When you're done: `docker compose down`. Add `-v` to also wipe the data.
+When you're done, run `docker compose down`. Add `-v` to also wipe the data.
 
-## 7. Reporting back
-
-Reply in the group with:
+## 5. Reporting back
 
 ```
 OS + Docker version:
-Stack started OK?          yes / no (what failed)
-A1–A10:  ✅ / ❌ (which, what happened)
-B1–B4:   ✅ / ❌
-C1–C2:   ✅ / ❌
-D1–D2:   ✅ / ❌
-E1–E4:   ✅ / ❌
-Anything confusing in the UI or README:
+tests/e2e.js result (last line):
+A1–A8:  ✅ / ❌ (which, what happened)
+B1–B5:  ✅ / ❌
+C1–C6:  ✅ / ❌
+D1–D6:  ✅ / ❌
+E1–E6:  ✅ / ❌
+F1–F2:  ✅ / ❌
+Anything confusing in the UI:
 ```
 
-For any ❌, please include a screenshot or the output of `docker compose logs <service>`.
+For any ❌, add a screenshot or the output of `docker compose logs <service>`.
 
-**If you make any changes, don't push them to `main`.** Push them to a separate branch
-(e.g. `git checkout -b fix/<your-name>`, then `git push origin fix/<your-name>`) and let me
-know, so I can review them before they're merged.
+**If you change any code, push it to a separate branch (for example `fix/<your-name>`), not to
+`dev/final` or `main`, and tell me so I can review it first.**
