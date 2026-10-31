@@ -10,6 +10,18 @@ const session = {
 const bus = new EventTarget();
 const emit = (type, detail) => bus.dispatchEvent(new CustomEvent(type, { detail }));
 
+function createRequestId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return [...bytes].map((b, i) => `${b.toString(16).padStart(2, '0')}${[3, 5, 7, 9].includes(i) ? '-' : ''}`).join('');
+  }
+  throw new Error('Secure random number generation is unavailable in this browser.');
+}
+
 async function api(path, { method = 'GET', body, headers = {}, auth = true } = {}) {
   const h = { 'Content-Type': 'application/json', ...headers };
   if (auth && session.token) h.Authorization = 'Bearer ' + session.token;
