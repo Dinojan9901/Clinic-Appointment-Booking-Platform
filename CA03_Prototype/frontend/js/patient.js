@@ -104,7 +104,7 @@ function PaymentModal({ appointment, onClose }) {
     try {
       const p = await api('/payments', {
         method: 'POST',
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': createRequestId() },
         body: { appointmentId: appointment._id, cardNumber: card.cardNumber, expMonth, expYear, cvc: card.cvc },
       });
       setState({ busy: true, msg: { type: 'info', text: `Payment approved (${p.receiptNo}). Confirming your booking...` } });
