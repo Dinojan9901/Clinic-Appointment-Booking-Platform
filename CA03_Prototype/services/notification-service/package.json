@@ -1,7 +1,7 @@
 {
   "name": "mediconnect-notification-service",
   "version": "1.0.0",
-  "description": "MediConnect Notification Service - consumes events and stores notifications",
+  "description": "MediConnect Notification Service - in-app notifications, email (SMTP) and reminders",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
@@ -11,6 +11,7 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "mongoose": "^8.5.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "nodemailer": "^6.9.14"
   }
 }

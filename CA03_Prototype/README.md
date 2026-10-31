@@ -1,201 +1,229 @@
 # MediConnect – CA03 Prototype
 
 A functional prototype of **MediConnect**, the microservices-based **clinic appointment
-booking platform** designed in CA01. Patients use a web app to find a doctor/clinic, book an
-appointment slot in advance, and later attend the clinic in person; the doctor records the
-visit and issues a digital prescription.
+booking platform** designed in CA01. Patients find a doctor and clinic, hold a slot, pay for it,
+and attend the clinic in person; the doctor records the visit and issues a **digitally signed
+e-prescription**; administrators verify doctors, manage clinics and users, and monitor the
+platform.
 
-The prototype implements the CA01 architecture: an **API Gateway**, four independent
-**microservices**, **database-per-service** (MongoDB), and an **event-driven** backbone
-(RabbitMQ), all orchestrated with **Docker Compose**.
+The prototype implements the CA01 architecture: an **API Gateway**, six independent
+**microservices** (including the **Payment Service** from the CA01 diagram), **database-per-service**
+(MongoDB), an **event-driven** backbone (RabbitMQ) with a **transactional outbox**, a
+**choreographed Saga** for booking + payment, a **Redis** cache, and **Docker Compose**
+orchestration with horizontal scaling. Everything used is free and open source.
 
 ---
 
 ## 1. Architecture at a glance
 
 ```
-                 ┌──────────────┐
-   Browser  ───► │  Frontend    │  (React SPA, nginx)   http://localhost:3000
-                 └──────┬───────┘
-                        │  /api/*  (same-origin proxy)
-                 ┌──────▼───────┐
-                 │ API Gateway  │  JWT auth, routing, rate limiting   :8080
-                 └──┬───┬───┬───┬┘
-        REST (sync) │   │   │   │
-        ┌───────────┘   │   │   └──────────────┐
-        ▼               ▼   ▼                  ▼
-   ┌─────────┐   ┌────────────┐   ┌───────────┐   ┌──────────────┐
-   │  Auth   │   │Appointment │   │  Records  │   │ Notification │
-   │ Service │   │  Service   │   │  Service  │   │   Service    │
-   └────┬────┘   └─────┬──────┘   └─────┬─────┘   └──────┬───────┘
-        │              │  publishes     │ consumes       │ consumes
-     auth_db      appointment_db   records_db       notification_db
-        │              │   ┌────────────┴────────────────┘
-        │              └──►│   RabbitMQ  (appointment.booked / .cancelled)
-        │       (outbox)   └─────────────────────────────
-   (each service owns its own MongoDB database = database-per-service)
+ Browser ──► Frontend (React SPA, nginx) :3000 ──/api──► API Gateway :8090
+                                                    JWT · routing · rate limit (Redis) · admin guard
+      ┌────────────┬──────────────┬──────────────┬──────────────┬──────────────┬─────────────┐
+      ▼            ▼              ▼              ▼              ▼              ▼             │
+   Auth       Appointment      Records       Payment       Notification     Admin           │
+  auth_db    appointment_db   records_db    payment_db    notification_db  admin_db         │
+     │        │   ▲  Redis        │  ▲ sync      │              ▲              ▲             │
+     │        │   │  cache        │  └─complete──┤ sync lookup  │ SMTP ─► Mailpit :8025      │
+     └────────┴───┴───────────────┴──────────────┴──────────────┴──────────────┘
+                        RabbitMQ topic exchange "mediconnect.events"  (UI :15672)
 ```
 
-- **Synchronous** communication: Browser → Gateway → services (REST). Also
-  Records Service → Appointment Service (marks the appointment *completed* when a doctor
-  completes the consultation record).
-- **Asynchronous** communication: Appointment Service **publishes** `appointment.booked` and
-  `appointment.cancelled` through a **transactional outbox**; the Records and Notification
-  services **consume** them independently (fan-out) with idempotent handlers.
+- **Synchronous (REST):** browser → gateway → services; Records → Appointment (complete the
+  visit); Payment → Appointment (amount + hold check); Auth → Appointment (clinic lookup).
+- **Asynchronous (events):** every state change publishes a domain event through its service's
+  **outbox**; consumers are idempotent and retry through a per-queue retry/dead-letter queue.
 
-See [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for a component-by-component
-mapping back to the CA01 diagrams.
+| Event | Published by | Consumed by |
+|-------|--------------|-------------|
+| `user.registered`, `user.status_changed` | Auth | Appointment (suspend/restore doctor), Admin |
+| `doctor.registered` / `.approved` / `.rejected` | Auth | Appointment (doctor profile), Notification, Admin |
+| `appointment.created` (slot held) | Appointment | Notification, Admin |
+| `payment.succeeded` / `payment.failed` | Payment | Appointment (Saga), Notification, Admin |
+| `appointment.booked` | Appointment | Records (create record), Notification (+reminder), Admin |
+| `appointment.rescheduled` / `.cancelled` / `.expired` | Appointment | Records, Notification, Payment (refund), Admin |
+| `appointment.payment_rejected` | Appointment | Payment (refund – compensation) |
+| `payment.refunded`, `record.completed`, `ehr.accessed`, `review.submitted` | Payment / Records / Appointment | Notification, Admin |
+
+See [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for the mapping to the CA01
+diagrams and requirements.
 
 ---
 
 ## 2. Services
 
-| Component            | Tech                | Port  | Database          | Responsibility |
-|---------------------|---------------------|-------|-------------------|----------------|
-| Frontend            | React (SPA) + nginx | 3000  | –                 | User interface |
-| API Gateway         | Node.js / Express   | 8090† | –                 | Entry point, JWT, routing, rate limit |
-| Auth Service        | Node.js / Express   | 4001* | `auth_db`         | Register, login, JWT, roles |
-| Appointment Service | Node.js / Express   | 4002* | `appointment_db`  | Doctor search, booking, publishes events |
-| Records Service     | Node.js / Express   | 4003* | `records_db`      | Consultation notes, e-prescriptions |
-| Notification Service| Node.js / Express   | 4004* | `notification_db` | Booking confirmations (mock email/SMS) |
-| MongoDB             | mongo:4.4           | 27017* | –                | One database per service |
-| RabbitMQ            | rabbitmq:3-mgmt     | 5672* / 15672 | –         | Event bus |
+| Component | Port | Database | Responsibility |
+|-----------|------|----------|----------------|
+| Frontend (React + nginx) | 3000 | – | Patient, doctor and admin web UI; public prescription verification page |
+| API Gateway | 8090 → 8080 | – | Single entry point: JWT, routing, Redis-backed rate limit, admin guard |
+| Auth Service | 4001* | `auth_db` | Register/login, JWT, doctor sign-up + admin verification, user enable/disable |
+| Appointment Service | 4002* | `appointment_db` | Clinics, doctor profiles & slots, booking holds, reschedule, cancel, reviews, Redis cache |
+| Records Service | 4003* | `records_db` | Consultation records, Ed25519-signed e-prescriptions (PDF + QR), patient history (EHR) |
+| Notification Service | 4004* | `notification_db` | In-app notifications, email via SMTP (Mailpit), appointment reminders |
+| Payment Service | 4005* | `payment_db` | Checkout with a simulated provider, receipts (PDF), refunds |
+| Admin Service | 4006* | `admin_db` | Audit/activity log from all events, platform statistics, service health |
+| MongoDB 4.4 / RabbitMQ / Redis | internal | – | Databases, event bus (UI :15672), cache |
+| Mailpit | 8025 | – | Demo email inbox (all outgoing emails land here) |
 
-`*` Internal to the Docker network only – the services are reachable **only through the
-gateway**, which mirrors the CA01 design (single public entry point).
-`†` Host port 8090 maps to the gateway's container port 8080 (the frontend reaches it
-internally, so you rarely need it). MongoDB is 4.4 because 5.0+ needs a CPU with AVX.
+`*` internal to the Docker network – reachable **only through the gateway**.
+Shared code (`common/`) holds the messaging layer (outbox relay, consumer retries) and service
+bootstrap helpers; each service still builds and deploys independently.
 
 ---
 
-## 3. Running the prototype (deployment demonstration)
+## 3. Running
 
-**Prerequisite:** Docker Desktop (with Docker Compose).
+**Prerequisite:** Docker Desktop.
 
 ```bash
 cd CA03_Prototype
-docker compose up --build
+docker compose down -v            # start from a clean database
+docker compose up --build -d
+node tests/wait-ready.js          # optional: waits until every service is healthy
 ```
 
-First start takes a couple of minutes (image builds + MongoDB/RabbitMQ health checks). When
-you see the services log `listening on port ...`, open:
+| URL | What |
+|-----|------|
+| http://localhost:3000 | Web app |
+| http://localhost:8025 | Mailpit – emails sent by the platform |
+| http://localhost:15672 | RabbitMQ management (`guest` / `guest`) |
 
-- **Web app:** http://localhost:3000
-- **RabbitMQ management UI:** http://localhost:15672  (user `guest`, password `guest`) –
-  useful to *show the event queues live* during the demo.
+**Demo accounts:** admin `admin@mediconnect.lk` / `admin123`; doctors
+`anushka.perera@`, `suresh.kumar@`, `fathima.nazeer@`, `rajitha.silva@` + `mediconnect.lk`
+/ `doctor123`. Patients register themselves. Seeded doctors always have free slots for the
+next 5 days.
 
-Stop with `Ctrl+C`, then `docker compose down` (add `-v` to also wipe the database volume).
+**Settings** (environment variables when starting compose):
+`HOLD_MINUTES` (default 10) – how long an unpaid booking holds the slot;
+`REMINDER_LEAD_HOURS` (default 24) – when reminders are sent before the visit.
 
-> The React SPA loads React from a CDN, so the browser needs internet access the first time
-> the page loads. Everything else runs fully locally in containers.
+**Scaling demo:** `docker compose up -d --scale appointment-service=3` – the gateway spreads
+requests across the replicas (see the `X-Served-By` response header and the Admin → Dashboard
+health table). Rate limits and the cache are shared in Redis, so they stay correct.
 
----
-
-## 4. Demo walkthrough (suggested for the presentation)
-
-1. **Register a patient** → log in. (Auth Service, JWT issued. Self-registration always
-   creates a *patient* – nobody can make themselves a doctor.)
-2. **Find a Doctor** → search by speciality/location → **Book** a slot with
-   **Dr. Anushka Perera** (Cardiology, Colombo).
-   - The Appointment Service reserves the slot atomically, records a *paid* (simulated)
-     payment, and saves an `appointment.booked` event in its **outbox** in the same write; the
-     outbox relay then publishes it to RabbitMQ.
-   - In the RabbitMQ UI you can watch the message flow to two queues.
-3. **My Appointments** → the booking appears as `booked` + `paid`.
-4. **Notifications** → a confirmation appears (created asynchronously by the Notification
-   Service from the event).
-5. In another browser/incognito, **log in as the doctor** using a seeded clinic account:
-
-   | Doctor | Email | Password |
-   |--------|-------|----------|
-   | Dr. Anushka Perera | `anushka.perera@mediconnect.lk` | `doctor123` |
-   | Dr. Suresh Kumar | `suresh.kumar@mediconnect.lk` | `doctor123` |
-   | Dr. Fathima Nazeer | `fathima.nazeer@mediconnect.lk` | `doctor123` |
-   | Dr. Rajitha Silva | `rajitha.silva@mediconnect.lk` | `doctor123` |
-
-   Each doctor sees **only their own** appointments and records.
-6. **Consultation Records** → the record for the booking is already there (auto-created by the
-   Records Service from the same event). Add notes + a prescription → **Complete record**.
-   - The Records Service makes a **synchronous REST call** to the Appointment Service, which
-     atomically moves the appointment `booked → completed` before the record is saved (it
-     *fails closed* if that service is down).
-7. Back as the **patient → My Records** → the prescription is now visible; in **My
-   Appointments** the visit shows *completed* and can no longer be cancelled.
-8. *(Optional)* Book another slot, then **Cancel** it → a cancellation notification appears
-   and the doctor's pending record shows *cancelled* (`appointment.cancelled` event).
-
-This one flow demonstrates: layered services, sync + async communication, database-per-service,
-JWT security with role/ownership checks, and the full booking lifecycle.
-
-**Resilience demo (outbox):** `docker compose stop rabbitmq` → book an appointment (it still
-succeeds; the event waits in the outbox) → `docker compose start rabbitmq` → once the broker
-is up (slow on this machine), the notification and record appear. No event is lost.
+> The React SPA loads React/Babel from a CDN, so the browser needs internet access.
 
 ---
 
-## 5. Key API endpoints (all via the gateway, prefix `/api`)
+## 4. Demo walkthrough
 
-| Method | Path | Auth | Service |
-|--------|------|------|---------|
-| POST | `/api/auth/register` | – | Auth |
-| POST | `/api/auth/login` | – | Auth |
-| GET  | `/api/auth/me` | JWT | Auth |
-| GET  | `/api/doctors?speciality=&location=` | JWT | Appointment |
-| POST | `/api/appointments` | JWT (patient) | Appointment |
-| GET  | `/api/appointments/mine` | JWT | Appointment |
-| GET  | `/api/appointments/:id` | JWT (owning patient or assigned doctor) | Appointment |
-| POST | `/api/appointments/:id/complete` | JWT (assigned doctor; called by Records Service) | Appointment |
-| POST | `/api/appointments/:id/cancel` | JWT (owning patient) | Appointment |
-| GET  | `/api/appointments/doctor` | JWT (doctor – own appointments) | Appointment |
-| GET  | `/api/records/mine` | JWT | Records |
-| GET  | `/api/records/doctor` | JWT (doctor – own patients) | Records |
-| PUT  | `/api/records/:id` | JWT (assigned doctor) | Records |
-| GET  | `/api/notifications/mine` | JWT | Notification |
+1. **Patient:** register → *Find a Doctor* (filter by speciality, location or clinic) → click a
+   slot. The slot is **held** (`pending_payment`) and the checkout opens.
+2. **Pay** with test card `4000 0000 0000 0002` → *declined*, slot still held. Pay with
+   `4242 4242 4242 4242` → approved; a few seconds later the booking becomes **booked + paid**
+   (the Saga completes via events). Download the **receipt** under *Payments*.
+3. **Notifications** / **Mailpit** show the hold, decline, confirmation and reminder emails.
+4. **Doctor** (incognito, e.g. Anushka): *Appointments* shows the visit; *Consultation Records*
+   has the auto-created record → add notes + several medications → **Complete & sign**. Use
+   **Patient history** to see the patient's earlier visits (audited).
+5. **Patient:** *My Records* → **Download prescription (PDF)** → open the **Verify** link
+   (or scan the QR code) → "Valid prescription – signature verified".
+6. **Patient:** *My Appointments* → **Rate your visit**; book another slot and **Reschedule** or
+   **Cancel** it (cancel after payment → automatic **refund**).
+7. **Doctor onboarding:** *Join as doctor* → login is blocked until **Admin → Doctor
+   Verification → Verify & approve** → the doctor logs in, publishes slots in **My Schedule**
+   and immediately appears in patient search.
+8. **Admin:** *Dashboard* (stats + live service health), *Users* (disable/enable), *Clinics*
+   (add/edit), *Payments* (totals, receipts), *Activity Log* (every domain event).
 
----
-
-## 6. CA03 requirement checklist
-
-| Requirement | Where it is demonstrated |
-|-------------|--------------------------|
-| Simple User Interface | React SPA (`frontend/`) |
-| Business Logic Layer | `controller.js` in each service |
-| Data Storage Layer | MongoDB models (`model.js` / `models.js`), one DB per service |
-| ≥ 3 major functionalities | (1) auth, (2) doctor search + booking, (3) consultation record + e-prescription, (+ notifications) |
-| Error handling | Validation + try/catch + central error middleware in every service and the gateway |
-| Basic security | JWT auth, bcrypt password hashing, role + ownership checks, no self-service doctor accounts, spoof-proof identity headers, gateway rate limiting |
-| Deployment demonstration | `docker compose up` brings up all services + infra |
-| Communication between components | REST via gateway (sync), Records→Appointment (sync, identity propagated), RabbitMQ events via transactional outbox (async) |
-| Architecture implementation | API Gateway + microservices + database-per-service + event bus (matches CA01) |
+**Resilience demos:**
+- `docker compose stop rabbitmq` → bookings and payments still work; events wait in the
+  outboxes → `docker compose start rabbitmq` → confirmations, records and emails catch up.
+- `docker compose stop appointment-service` → completing a record **fails closed** (503).
+- Start with `HOLD_MINUTES=1` and leave a booking unpaid → it **expires** and the slot is freed.
 
 ---
 
-## 7. Notes & simplifications (prototype scope)
+## 5. API (all through the gateway, prefix `/api`)
 
-- **Payment** is simulated (always succeeds) – a real gateway integration is out of scope.
-- **Doctor accounts** are seeded (no admin onboarding UI). A doctor's login is linked to their
-  profile by **email**, which travels in the JWT and the `appointment.*` events.
-- If you ran an older version, start clean with `docker compose down -v` – older appointments
-  and records carry no doctor email, so they won't appear in any doctor's view.
-- MongoDB is used for every service (one logical database each) to keep the stack simple;
-  the CA01 design also lists PostgreSQL for transactional data.
-- Focus, per the module guidance, is on demonstrating the **architecture** rather than a
-  production-grade implementation.
+| Method | Path | Who |
+|--------|------|-----|
+| POST | `/auth/register`, `/auth/register-doctor`, `/auth/login` | public |
+| GET | `/auth/me` | any user |
+| GET | `/auth/users?role=&q=` · PATCH `/auth/users/:id/status` | admin |
+| GET | `/auth/doctors?status=` · POST `/auth/doctors/:id/approve` · `/reject` | admin |
+| GET | `/clinics` (public) · POST `/clinics` · PUT `/clinics/:id` | admin for writes |
+| GET | `/doctors?speciality=&location=&clinicId=` · `/doctors/:id` · `/doctors/:id/reviews` | any user |
+| GET | `/doctors/me` · POST `/doctors/me/slots` · DELETE `/doctors/me/slots/:slot` | doctor |
+| GET | `/doctors/all` · `/appointments/all` | admin |
+| POST | `/appointments` (hold) · `/appointments/:id/cancel` · `/reschedule` · `/review` | patient |
+| GET | `/appointments/mine` · `/appointments/doctor` · `/appointments/:id` | owner / assigned doctor / admin |
+| POST | `/appointments/:id/complete` | assigned doctor (called by Records) |
+| POST | `/payments` (header `Idempotency-Key` optional) | patient |
+| GET | `/payments/mine` · `/payments/:id/receipt` (PDF) · `/payments` (admin) | owner / admin |
+| GET | `/records/mine` · `/records/doctor` · `/records/patient/:patientId` · `/records/:id/prescription` | patient / doctor |
+| PUT | `/records/:id` (complete + sign) | assigned doctor |
+| GET | `/prescriptions/verify/:code` · `/prescriptions/public-key` | public |
+| GET | `/notifications/mine` · POST `/notifications/mine/read` | any user |
+| GET | `/admin/stats` · `/admin/activity` · `/admin/health` | admin |
 
 ---
 
-## 8. Key design decisions (consistency, reliability, security)
+## 6. Requirement coverage
 
-| Problem | Decision | Where |
-|---------|----------|-------|
-| Services trust `x-user-*` identity headers – a client could forge them | The gateway **strips** all `x-user-*` headers from every incoming request and only re-adds them from a verified JWT. `/api/auth/me` now requires a JWT. | `api-gateway/src/index.js` |
-| Publishing straight to RabbitMQ after the DB write loses the event if the broker is down (dual-write problem) | **Transactional outbox**: the event is stored inside the appointment document in the *same atomic write*; a relay publishes it on a confirm channel and removes it only after the broker acks. Delivery is at-least-once, so consumers are **idempotent** (upsert by `appointmentId`; unique `eventId` on notifications). | `appointment-service/src/events.js`, `models.js` |
-| Read-check-write on slots lets two concurrent bookings take the same slot | **Atomic conditional update** – `findOneAndUpdate({ availableSlots: slot }, { $pull })` – reserves the slot in one operation; a failed appointment save gives the slot back (compensation). | `appointment-service/src/controller.js` |
-| Cancellation was invisible to the other services | Cancel emits **`appointment.cancelled`** (via the outbox); Records marks the pending record cancelled, Notification sends a cancellation notice. The cancel is a conditional update, so a double-click cannot cancel twice. | appointment / records / notification `events.js` |
-| Anyone could self-register as doctor/admin; any user could read any appointment; doctors saw every record | Self-registration creates **patients only**; doctor accounts are provisioned (seeded). **Ownership checks**: an appointment is readable only by its patient or assigned doctor; doctors see and complete only their own patients' records. | auth `controller.js`/`seed.js`, appointment + records `controller.js` |
-| A patient could cancel *after* the visit (the appointment never became `completed`), releasing a slot that had been used | Completing a record now calls the Appointment Service, which performs an **atomic `booked → completed` transition** before the record is saved. Cancel also requires `booked`, so a concurrent cancel and completion cannot both succeed, and a completed appointment cannot be cancelled. The call is idempotent, so a retry after a partial failure is safe. | appointment + records `controller.js` |
-| Records→Appointment validation *failed open* when the Appointment Service was down | It now **fails closed** (HTTP 503, 3 s timeout): for a clinical record, **consistency is chosen over availability** – the doctor retries rather than risk recording a cancelled visit. The caller's identity is propagated so the Appointment Service enforces its own authorisation. | `records-service/src/controller.js` |
+**CA03 brief**
 
-**Why MongoDB single-document atomicity instead of transactions?** Multi-document transactions
-need a replica set; keeping the outbox inside the aggregate (the appointment) gives the same
-guarantee on a standalone MongoDB, which keeps the deployment simple.
+| Requirement | Where |
+|-------------|-------|
+| Simple User Interface | `frontend/` – patient, doctor and admin portals |
+| Business Logic Layer | controller files in every service (`appointments.js`, `controller.js`, …) |
+| Data Storage Layer | Mongoose models, one database per service |
+| ≥ 3 major functionalities | auth & doctor verification, search & booking, payment, records & e-prescriptions, reviews, admin |
+| Error handling | validation + central error middleware everywhere; retries, dead-letter queues, fail-closed sync calls |
+| Basic security | JWT, bcrypt, RBAC + ownership checks, spoof-proof identity headers, admin guard, rate limiting, signed prescriptions, audit log |
+| Deployment demonstration | `docker compose up` (12 containers), `--scale`, GitHub Actions CI |
+| Communication between components | REST via gateway + service-to-service REST + RabbitMQ events |
+
+**CA01 functional requirements**
+
+| FR | Implemented as |
+|----|----------------|
+| FR-01 Registration & auth | patient sign-up, doctor sign-up with licence → admin verification, admin account, JWT |
+| FR-02 Doctor & clinic search | speciality / location / clinic filters, availability, ratings (Redis-cached) |
+| FR-03 Book, reschedule, cancel | slot hold → payment → booking; reschedule; cancel with refund |
+| FR-04 Consultation record | auto-created by event, completed by the doctor after the visit |
+| FR-05 E-prescription | Ed25519 digital signature, PDF with QR, public verification for pharmacies |
+| FR-06 EHR | patient history across visits; doctors see it only for their patients; access audited |
+| FR-07 Payment | separate Payment Service, simulated provider, receipts, refunds, idempotency keys |
+| FR-08 Notifications | in-app + email (Mailpit), confirmations, refunds, reminders |
+| FR-09 Rating & feedback | 1–5 stars + comment after a completed visit, doctor average |
+| FR-10 Administration | doctor verification, users, clinics, payments, activity/audit log, service health |
+
+---
+
+## 7. Key design decisions
+
+| Problem | Decision |
+|---------|----------|
+| Booking + payment span two services and databases | **Choreographed Saga**: Appointment holds the slot (`pending_payment`) → Payment charges → `payment.succeeded` confirms the booking. Compensations: an unpaid hold **expires** and frees the slot; a payment that arrives after the hold ended triggers `appointment.payment_rejected` → **refund**; cancelling a paid booking → **refund**. |
+| Writing to the DB and publishing an event can't be atomic (dual-write) | **Transactional outbox** inside each aggregate document (single-document atomicity, no replica set needed), relayed with RabbitMQ publisher confirms. |
+| Redelivered events and network retries | **Idempotent consumers** (upserts, unique event keys) and **Idempotency-Key** on payments; one active payment per appointment enforced by a partial unique index. |
+| Failing messages must not be lost or loop forever | Per-queue **retry queue** (TTL, dead-letters back to the same queue only), max 5 attempts, then a `.dead` parking queue. |
+| Two patients booking the same slot | Atomic conditional update (`$pull` on the free slot) – exactly one wins. |
+| Identity headers could be forged | Gateway strips client `x-user-*` headers; only a verified JWT sets them; `/api/admin` additionally requires the admin role. |
+| Anyone could claim to be a doctor | Doctors self-register as **pending**; an admin verifies the licence; profiles become searchable only on `doctor.approved`. |
+| Prescriptions must be trustworthy outside the system | **Ed25519 digital signature** over the prescription; anyone (a pharmacy) can verify it with the public key. |
+| Medical history is sensitive | Only a treating doctor can open a patient's history, and every access emits `ehr.accessed` into the audit log. |
+| Search is the busiest read path | **Redis cache-aside** with version-based invalidation (all replicas see changes at once). |
+| Completing a record when the Appointment Service is down | **Fails closed** (503): consistency over availability for clinical data. |
+| Horizontal scaling | Stateless services, no fixed container names, shared state in MongoDB/Redis, no keep-alive pinning at the gateway. |
+
+---
+
+## 8. Testing
+
+- **Automated end-to-end test** (≈70 checks across every feature, through the gateway):
+  `node tests/e2e.js` with the stack running (Node 18+). Add `EXPIRY_TEST=1` when the stack runs
+  with `HOLD_MINUTES=1` to include hold expiry.
+- **GitHub Actions** (`.github/workflows/ci.yml`): on every push it syntax-checks the code,
+  builds all images, starts the stack with **2 appointment-service replicas**, waits for health
+  and runs the end-to-end test – so the system is verified on a clean machine.
+
+## 9. Notes & simplifications
+
+- **Payments are simulated** (no money moves, no card data stored – only brand + last 4).
+- **Email** goes to Mailpit, a local test inbox; **SMS** is logged by the Notification Service.
+- MongoDB is used for every service (CA01 also lists PostgreSQL for transactional data); the
+  outbox keeps state + event atomic without multi-document transactions.
+- CA01 targets Kubernetes; Docker Compose with `--scale` demonstrates the same deployment ideas
+  locally.

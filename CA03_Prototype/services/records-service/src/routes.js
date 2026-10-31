@@ -2,9 +2,15 @@
 const express = require('express');
 const c = require('./controller');
 
-const router = express.Router();
-router.get('/mine', c.myRecords);
-router.get('/doctor', c.doctorRecords);
-router.put('/:id', c.completeRecord);
+const records = express.Router();
+records.get('/mine', c.myRecords);
+records.get('/doctor', c.doctorRecords);
+records.get('/patient/:patientId', c.patientHistory);
+records.get('/:id/prescription', c.prescriptionPdf);
+records.put('/:id', c.completeRecord);
 
-module.exports = router;
+const prescriptions = express.Router();
+prescriptions.get('/public-key', c.publicKey);
+prescriptions.get('/verify/:code', c.verifyPrescription);
+
+module.exports = { records, prescriptions };

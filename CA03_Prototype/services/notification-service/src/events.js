@@ -1,109 +1,99 @@
 /**
- * Messaging layer (consumer): subscribes to appointment lifecycle events and
- * creates the matching patient notification (mock email/SMS):
- *  - appointment.booked    -> booking confirmation
- *  - appointment.cancelled -> cancellation notice
- * Runs independently of the Records Service consumer on the same events -
- * classic fan-out.
- *
- * Delivery is at-least-once (the publisher uses a transactional outbox), so
- * each notification stores the source eventId under a unique index; a
- * redelivered event is detected and acknowledged without notifying twice.
- *
- * Connection is retried indefinitely and re-established automatically if it
- * drops, so the consumer is resilient to RabbitMQ starting slowly or
- * restarting.
+ * Messaging layer (consumer): turns domain events into patient/doctor
+ * notifications and maintains appointment reminders. Each notification key is
+ * derived from the event id, so redelivered events never notify twice.
  */
-const amqp = require('amqplib');
-const Notification = require('./model');
+const { Reminder } = require('./model');
+const { notify } = require('./notify');
+const { slotToDate } = require('../common/service');
 
-const EXCHANGE = 'mediconnect.events';
-const QUEUE = 'notifications.appointment-events';
+const REMINDER_LEAD_HOURS = Number(process.env.REMINDER_LEAD_HOURS || 24);
+const REMINDER_INTERVAL_MS = 30000;
 
-const MESSAGES = {
-  'appointment.booked': (evt) =>
-    `Your appointment with ${evt.doctorName} at ${evt.clinicName} ` +
-    `is confirmed for ${evt.slot}. Please arrive 10 minutes early.`,
-  'appointment.cancelled': (evt) =>
-    `Your appointment with ${evt.doctorName} at ${evt.clinicName} ` +
-    `on ${evt.slot} has been cancelled.`,
+const money = (evt) => `${evt.currency || 'LKR'} ${Number(evt.amount ?? evt.fee ?? 0).toFixed(2)}`;
+const at = (evt) => `${evt.doctorName} at ${evt.clinicName} on ${evt.slot}`;
+const time = (d) => new Date(d).toLocaleTimeString('en-GB', { timeZone: 'Asia/Colombo', hour: '2-digit', minute: '2-digit' });
+
+const toPatient = (evt, subject, message, type = 'appointment') =>
+  notify({ key: `${evt.eventId}:patient`, userId: evt.patientId, email: evt.patientEmail, type, subject, message });
+const toDoctor = (evt, subject, message) =>
+  notify({ key: `${evt.eventId}:doctor`, email: evt.doctorEmail, type: 'appointment', subject, message });
+
+async function upsertReminder(evt) {
+  const slotAt = slotToDate(evt.slot);
+  if (!slotAt) return;
+  await Reminder.updateOne(
+    { appointmentId: evt.appointmentId },
+    {
+      $set: {
+        patientId: evt.patientId,
+        patientEmail: evt.patientEmail,
+        doctorName: evt.doctorName,
+        clinicName: evt.clinicName,
+        slot: evt.slot,
+        sendAt: new Date(slotAt.getTime() - REMINDER_LEAD_HOURS * 3600000),
+        sent: false,
+      },
+    },
+    { upsert: true }
+  );
+}
+
+const handlers = {
+  'appointment.created': (evt) =>
+    toPatient(evt, 'Complete your payment', `Your slot with ${at(evt)} is on hold. Please complete the payment of ${money(evt)} before ${time(evt.holdExpiresAt)} to confirm it.`, 'payment'),
+  'payment.failed': (evt) =>
+    toPatient(evt, 'Payment declined', `Your payment of ${money(evt)} was declined (${String(evt.reason).replace('_', ' ')}). Your slot is still on hold - you can try another card.`, 'payment'),
+  'appointment.booked': async (evt) => {
+    await toPatient(evt, 'Appointment confirmed', `Your appointment with ${at(evt)} is confirmed (receipt ${evt.receiptNo || '-'}). Please arrive 10 minutes early.`);
+    await toDoctor(evt, 'New booking', `New appointment: ${evt.patientName} on ${evt.slot}.`);
+    await upsertReminder(evt);
+  },
+  'appointment.rescheduled': async (evt) => {
+    await toPatient(evt, 'Appointment rescheduled', `Your appointment with ${evt.doctorName} has moved from ${evt.oldSlot} to ${evt.slot}.`);
+    await toDoctor(evt, 'Appointment rescheduled', `${evt.patientName} moved their appointment from ${evt.oldSlot} to ${evt.slot}.`);
+    await upsertReminder(evt);
+  },
+  'appointment.cancelled': async (evt) => {
+    await toPatient(evt, 'Appointment cancelled', `Your appointment with ${at(evt)} has been cancelled.${evt.wasPaid ? ' A full refund will be issued.' : ''}`);
+    if (evt.wasPaid) await toDoctor(evt, 'Appointment cancelled', `${evt.patientName} cancelled the appointment on ${evt.slot}.`);
+    await Reminder.deleteOne({ appointmentId: evt.appointmentId });
+  },
+  'appointment.expired': (evt) =>
+    toPatient(evt, 'Slot hold expired', `Your hold for ${at(evt)} expired because payment was not completed. The slot has been released.`),
+  'payment.refunded': (evt) =>
+    toPatient(evt, 'Refund processed', `A refund of ${money(evt)} for receipt ${evt.receiptNo} has been processed.`, 'payment'),
+  'record.completed': (evt) =>
+    toPatient(evt, 'Prescription ready', `${evt.doctorName} has completed your consultation record. Prescription ${evt.prescriptionCode} is ready to download in My Records.`, 'record'),
+  'doctor.registered': (evt) =>
+    notify({ key: `${evt.eventId}:doctor`, userId: evt.userId, email: evt.email, type: 'account', subject: 'Registration received', message: `Hi ${evt.name}, your doctor registration (licence ${evt.licenseNo}) was received and is awaiting admin verification.` }),
+  'doctor.approved': (evt) =>
+    notify({ key: `${evt.eventId}:doctor`, userId: evt.userId, email: evt.email, type: 'account', subject: 'Account verified', message: `Hi ${evt.name}, your doctor account has been verified. You can now log in and publish your available slots.` }),
+  'doctor.rejected': (evt) =>
+    notify({ key: `${evt.eventId}:doctor`, userId: evt.userId, email: evt.email, type: 'account', subject: 'Registration not approved', message: `Hi ${evt.name}, your doctor registration was not approved${evt.reason ? `: ${evt.reason}` : '.'}` }),
 };
 
-async function connectRabbit(url, name = 'notification-service') {
-  let attempt = 0;
-  while (true) {
-    attempt++;
-    try {
-      const conn = await amqp.connect(url);
-      const channel = await conn.createConfirmChannel();
-      await channel.assertExchange(EXCHANGE, 'topic', { durable: true });
-      for (const key of Object.keys(MESSAGES)) {
-        const retryQueue = `${QUEUE}.${key}.retry`;
-        await channel.assertQueue(retryQueue, {
-          durable: true,
-          arguments: {
-            'x-message-ttl': 5000,
-            'x-dead-letter-exchange': EXCHANGE,
-            'x-dead-letter-routing-key': key,
-          },
-        });
-        await channel.bindQueue(retryQueue, EXCHANGE, `${key}.retry`);
-      }
-      const q = await channel.assertQueue(QUEUE, { durable: true });
-      for (const key of Object.keys(MESSAGES)) {
-        await channel.bindQueue(q.queue, EXCHANGE, key);
-      }
-
-      channel.consume(q.queue, async (msg) => {
-        if (!msg) return;
-        const key = msg.fields.routingKey;
-        try {
-          const evt = JSON.parse(msg.content.toString());
-          const message = MESSAGES[key](evt);
-
-          await Notification.create({
-            userId: evt.patientId,
-            eventId: evt.eventId,
-            type: 'appointment',
-            message,
-            channel: 'email/sms',
-          });
-
-          // Mock delivery.
-          console.log(`[notification-service] (email/sms) -> patient ${evt.patientId}: ${message}`);
-          channel.ack(msg);
-        } catch (err) {
-          if (err.code === 11000) {
-            // Duplicate eventId: already notified for this event.
-            console.log(`[notification-service] duplicate ${key} ignored`);
-            return channel.ack(msg);
-          }
-          console.error(`[notification-service] failed to process ${key}:`, err.message);
-          // Keep retrying transient failures so a temporary DB issue cannot
-          // permanently lose a confirmation or cancellation notice.
-          channel.publish(EXCHANGE, `${key}.retry`, msg.content, {
-            persistent: true,
-            contentType: msg.properties.contentType,
-            messageId: msg.properties.messageId,
-            headers: msg.properties.headers,
-          });
-          await channel.waitForConfirms();
-          channel.ack(msg);
-        }
-      });
-
-      console.log(`[${name}] connected to RabbitMQ and consuming ${QUEUE}`);
-      conn.on('close', () => {
-        console.warn(`[${name}] RabbitMQ connection closed; reconnecting...`);
-        setTimeout(() => connectRabbit(url, name), 3000);
-      });
-      conn.on('error', () => {}); // handled by close
-      return;
-    } catch (err) {
-      console.log(`[${name}] RabbitMQ attempt ${attempt} failed (${err.message}); retrying in 3s`);
-      await new Promise((r) => setTimeout(r, 3000));
-    }
+async function sendDueReminders() {
+  for (;;) {
+    const reminder = await Reminder.findOneAndUpdate({ sent: false, sendAt: { $lte: new Date() } }, { $set: { sent: true } }, { new: true });
+    if (!reminder) return;
+    if ((slotToDate(reminder.slot)?.getTime() || 0) <= Date.now()) continue;
+    await notify({
+      key: `reminder:${reminder.appointmentId}:${reminder.slot}`,
+      userId: reminder.patientId,
+      email: reminder.patientEmail,
+      type: 'reminder',
+      subject: 'Appointment reminder',
+      message: `Reminder: your appointment with ${reminder.doctorName} at ${reminder.clinicName} is on ${reminder.slot}.`,
+    });
   }
 }
 
-module.exports = { connectRabbit };
+function registerEvents(bus) {
+  bus.subscribe('notifications.events', Object.keys(handlers), async (evt, key) => {
+    if (handlers[key]) await handlers[key](evt);
+  });
+  setInterval(() => sendDueReminders().catch((err) => console.warn('[reminders] failed:', err.message)), REMINDER_INTERVAL_MS);
+}
+
+module.exports = { registerEvents };

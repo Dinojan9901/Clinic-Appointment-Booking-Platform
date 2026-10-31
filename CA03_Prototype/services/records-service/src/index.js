@@ -1,39 +1,34 @@
 /**
  * MediConnect - Records Service (bootstrap)
- * Consumes "appointment.booked" / "appointment.cancelled" (async) and calls
- * the Appointment Service (sync) when a doctor completes a consultation record.
+ * Consultation records, signed e-prescriptions and patient history (EHR).
+ * Consumes appointment events (async) and calls the Appointment Service (sync)
+ * when a doctor completes a consultation record.
  */
-const express = require('express');
-const cors = require('cors');
-const morgan = require('morgan');
-const connectDB = require('./db');
-const { connectRabbit } = require('./events');
-const routes = require('./routes');
+const { createApp, finish, connectDB } = require('../common/service');
+const { EventBus } = require('../common/messaging');
+const { loadKeys } = require('./signing');
+const { registerEvents } = require('./events');
+const { onEventsQueued } = require('./controller');
+const { records, prescriptions } = require('./routes');
 
+const NAME = 'records-service';
 const PORT = process.env.PORT || 4003;
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/records_db';
 const RABBIT_URL = process.env.RABBIT_URL || 'amqp://localhost:5672';
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(morgan('dev'));
-
-app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'records-service' }));
-app.use('/records', routes);
-
-app.use((err, _req, res, _next) => {
-  if (err.name === 'CastError') return res.status(400).json({ error: 'invalid id' });
-  console.error('[records-service] error:', err.message);
-  res.status(500).json({ error: 'internal server error' });
-});
+const app = createApp(NAME);
+app.use('/records', records);
+app.use('/prescriptions', prescriptions);
+finish(app, NAME);
 
 async function start() {
-  await connectDB(MONGO_URL, 'records-service');
-  // Serve HTTP immediately; connect + consume from RabbitMQ in the background
-  // (retries until available).
-  app.listen(PORT, () => console.log(`[records-service] listening on port ${PORT}`));
-  connectRabbit(RABBIT_URL, 'records-service');
+  await connectDB(MONGO_URL, NAME);
+  await loadKeys();
+  app.listen(PORT, () => console.log(`[${NAME}] listening on port ${PORT}`));
+  const bus = new EventBus(RABBIT_URL, NAME);
+  registerEvents(bus);
+  onEventsQueued(() => bus.flush());
+  bus.start();
 }
 
 start();

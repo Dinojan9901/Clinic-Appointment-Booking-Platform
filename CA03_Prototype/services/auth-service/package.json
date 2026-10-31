@@ -1,7 +1,7 @@
 {
   "name": "mediconnect-auth-service",
   "version": "1.0.0",
-  "description": "MediConnect Auth Service - registration, login, JWT issuance",
+  "description": "MediConnect Auth Service - registration, login, JWT, doctor verification and user administration",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
@@ -12,6 +12,7 @@
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.5.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "amqplib": "^0.10.4"
   }
 }

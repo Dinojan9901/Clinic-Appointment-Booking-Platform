@@ -1,0 +1,16 @@
+{
+  "name": "mediconnect-admin-service",
+  "version": "1.0.0",
+  "description": "MediConnect Admin Service - platform activity (audit log), statistics and service health",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "mongoose": "^8.5.0",
+    "morgan": "^1.10.0"
+  }
+}
